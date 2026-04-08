@@ -167,7 +167,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         root_layout.setContentsMargins(14, 12, 14, 12)
         root_layout.setSpacing(10)
 
-        title = QtWidgets.QLabel("Triggered 5-Second Force Analysis")
+        title = QtWidgets.QLabel("Triggered Force Analysis")
         title.setObjectName("title")
         title.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         root_layout.addWidget(title)
@@ -202,7 +202,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._style_range_plot()
         root_layout.addWidget(self.range_plot, stretch=2)
 
-        raw_grid_container = QtWidgets.QGroupBox("Raw Finger Force (5 Seconds After Trigger)")
+        raw_grid_container = QtWidgets.QGroupBox("Raw Finger Force (Post Trigger)")
         raw_grid_container.setFlat(True)
         raw_grid_layout = QtWidgets.QGridLayout(raw_grid_container)
         raw_grid_layout.setContentsMargins(2, 8, 2, 2)
@@ -295,7 +295,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
 
     def set_stream_state(self, sample_rate_hz: int, captures: int, capturing: bool) -> None:
         """Update acquisition status chips."""
-        state_text = "Capturing 5-second window..." if capturing else "Waiting for trigger"
+        state_text = "Capturing window..." if capturing else "Waiting for trigger"
         self._acquisition_label.setText(f"State: {state_text}")
         self._capture_count_label.setText(f"Events: {captures}")
         self._sampling_label.setText(f"Sample rate: {sample_rate_hz} Hz")

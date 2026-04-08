@@ -17,7 +17,7 @@ class DataBatch:
 
 @dataclass(slots=True, frozen=True)
 class CapturedWindow:
-    """Processed 5-second post-trigger window used for visualization."""
+    """Processed post-trigger window used for visualization."""
 
     timestamps: NDArray[np.float64]
     finger_forces: NDArray[np.float64]

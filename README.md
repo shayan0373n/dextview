@@ -15,7 +15,7 @@ The application features:
 
 - 10 force sensors mapped one-to-one to 10 fingers.
 - Analog AUX-in trigger detection for event-based capturing.
-- 5-second capture window after each trigger.
+- Capture window after each trigger.
 - Event history with navigation (Prev/Next buttons or Left/Right arrow keys).
 - Real-time visualization of raw finger forces and peak force ranges.
 

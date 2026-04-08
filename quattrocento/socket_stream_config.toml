@@ -7,7 +7,7 @@ port = 23456
 # - nch: 0..3 (00,01,10,11 in protocol docs)
 rec_on = false
 fsamp = 512
-nch = 3
+nch = 0
 decimation_enabled = true
 
 # Channel selection for app processing.
@@ -26,8 +26,8 @@ decimation_enabled = true
 # - Accessory 1 (Sample Counter): 400
 # - Accessory 2 (Trigger BNC): 401
 #
-force_channel_indices = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
-aux_in_channel_index = 384
+force_channel_indices = [97, 98, 99, 100, 101, 102, 103, 104, 105, 106]
+aux_in_channel_index = 96
 socket_read_size = 65536
 
 # INx_CONF2 and MULTIPLE_INx_CONF2 defaults.

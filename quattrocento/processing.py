@@ -25,8 +25,25 @@ class TriggerWindowProcessor:
         """Configure trigger threshold and capture window length."""
         self._window_samples = config.window_samples
         self._trigger_threshold = config.trigger_threshold
+        self._sample_rate_hz = config.sample_rate_hz
         self._finger_sensor_map = config.finger_sensor_map
         self._sensor_count = config.sensor_count
+
+        # Adaptive trigger model on AUX signal:
+        # - baseline: slow EMA to follow DC drift (e.g., ~8000 counts offset)
+        # - noise: EMA of |aux-baseline| to estimate noise floor
+        # Trigger becomes HIGH when (aux-baseline) exceeds max(static_threshold, k*noise).
+        baseline_tau_seconds = 2.0
+        noise_tau_seconds = 1.0
+        self._baseline_alpha = 1.0 - np.exp(
+            -1.0 / (self._sample_rate_hz * baseline_tau_seconds)
+        )
+        self._noise_alpha = 1.0 - np.exp(
+            -1.0 / (self._sample_rate_hz * noise_tau_seconds)
+        )
+        self._noise_scale = 4.0
+        self._baseline_estimate: float | None = None
+        self._noise_estimate = 0.0
 
         self._capturing = False
         self._previous_trigger_high = False
@@ -41,10 +58,17 @@ class TriggerWindowProcessor:
         """Whether a post-trigger capture is currently in progress."""
         return self._capturing
 
+    @property
+    def is_trigger_high(self) -> bool:
+        """Whether the adaptive trigger model currently considers the signal high."""
+        return self._previous_trigger_high
+
     def reset(self) -> None:
         """Clear internal state and drop partially collected data."""
         self._capturing = False
         self._previous_trigger_high = False
+        self._baseline_estimate = None
+        self._noise_estimate = 0.0
         self._write_pos = 0
 
     def process_batch(self, batch: DataBatch) -> CapturedWindow | None:
@@ -53,7 +77,7 @@ class TriggerWindowProcessor:
         if batch_size == 0:
             return None
 
-        trigger_high = batch.aux_in >= self._trigger_threshold
+        trigger_high = self._compute_trigger_high(batch.aux_in)
         prev_high = np.empty(batch_size, dtype=np.bool_)
         prev_high[0] = self._previous_trigger_high
         prev_high[1:] = trigger_high[:-1]
@@ -103,6 +127,33 @@ class TriggerWindowProcessor:
         if self._write_pos >= self._window_samples:
             return self._complete_capture()
         return None
+
+    def _compute_trigger_high(self, aux_in: NDArray[np.float64]) -> NDArray[np.bool_]:
+        """Threshold AUX after adaptive baseline/noise normalization."""
+        trigger_high = np.zeros(aux_in.shape[0], dtype=np.bool_)
+
+        baseline = self._baseline_estimate
+        noise = self._noise_estimate
+
+        for idx, sample in enumerate(aux_in):
+            sample_value = float(sample)
+            if baseline is None:
+                baseline = sample_value
+
+            residual = sample_value - baseline
+
+            dynamic_threshold = max(self._trigger_threshold, self._noise_scale * noise)
+            trigger_high[idx] = abs(residual) >= dynamic_threshold
+
+            # Update noise and baseline after the trigger check so the pulse
+            # does not inflate the threshold used to detect itself.
+            noise += self._noise_alpha * (abs(residual) - noise)
+            baseline_step = float(np.clip(residual, -dynamic_threshold, dynamic_threshold))
+            baseline += self._baseline_alpha * baseline_step
+
+        self._baseline_estimate = baseline
+        self._noise_estimate = noise
+        return trigger_high
 
     def _complete_capture(self) -> CapturedWindow:
         timestamps = self._time_buffer[: self._write_pos].copy()
