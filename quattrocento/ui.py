@@ -11,6 +11,29 @@ from PyQt5.QtCore import Qt
 from .models import CapturedWindow
 
 
+_RAW_GRID_COLUMNS = 5
+
+# Peak-force bins used to color the per-finger max marker and the legend.
+# Each entry is (upper_threshold_inclusive, display_label, hex_color).
+# The final bin uses +inf as a catch-all. Single source of truth for both
+# the legend swatches and the marker color lookup.
+_MVC_COLOR_BINS: tuple[tuple[float, str, str], ...] = (
+    (5.0, "≤5", "#A0AEC0"),
+    (10.0, "≤10", "#F6E05E"),
+    (20.0, "≤20", "#ED8936"),
+    (40.0, "≤40", "#E53E3E"),
+    (60.0, "≤60", "#9F7AEA"),
+    (float("inf"), ">60", "#742A2A"),
+)
+
+
+def _mvc_bin_color(peak_force: float) -> str:
+    for threshold, _label, color in _MVC_COLOR_BINS:
+        if peak_force <= threshold:
+            return color
+    return _MVC_COLOR_BINS[-1][2]
+
+
 FINGER_COLORS = (
     "#0B4F6C",
     "#9C2D48",
@@ -80,6 +103,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
 
     previous_requested = QtCore.pyqtSignal()
     next_requested = QtCore.pyqtSignal()
+    mvc_toggled = QtCore.pyqtSignal(bool)
 
     def __init__(self, finger_labels: Sequence[str]) -> None:
         """Create the UI for finger-range and raw-force event plots."""
@@ -95,11 +119,16 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._acquisition_label = QtWidgets.QLabel("State: Waiting for trigger")
         self._last_trigger_label = QtWidgets.QLabel("Last trigger: -")
         self._sampling_label = QtWidgets.QLabel("Sample rate: -")
+        self._mvc_status_label = QtWidgets.QLabel("MVC: Uncalibrated")
         self._event_position_label = QtWidgets.QLabel("Viewing: -/-")
         self._previous_button = QtWidgets.QPushButton("< Prev")
         self._next_button = QtWidgets.QPushButton("Next >")
+        self._mvc_button = QtWidgets.QPushButton("Calibrate MVC")
+        self._mvc_button.setObjectName("mvcButton")
+        self._mvc_button.setCheckable(True)
         self._raw_plot_widgets: list[pg.PlotWidget] = []
         self._raw_curves: list[pg.PlotDataItem] = []
+        self._raw_max_markers: list[pg.PlotDataItem] = []
         self._previous_shortcut: QtWidgets.QShortcut | None = None
         self._next_shortcut: QtWidgets.QShortcut | None = None
 
@@ -107,6 +136,8 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._build_layout()
         self._install_navigation_shortcuts()
         self.set_event_navigation(current_index=None, total_events=0)
+        self.set_mvc_session_calibrated(False)
+        self._apply_unit_labels(is_scaled=False)
 
     def _apply_palette(self) -> None:
         pg.setConfigOptions(antialias=True, foreground="#27313D", background="#F4F7FB")
@@ -153,6 +184,11 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             QPushButton:hover:!disabled {
                 background: #CCDDF0;
             }
+            QPushButton#mvcButton:checked {
+                background: #E63946;
+                border-color: #D62828;
+                color: white;
+            }
             """
         )
 
@@ -179,6 +215,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             self._capture_count_label,
             self._last_trigger_label,
             self._sampling_label,
+            self._mvc_status_label,
         ):
             chip.setProperty("kind", "chip")
             chips_layout.addWidget(chip)
@@ -190,12 +227,16 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._event_position_label.setObjectName("eventPosition")
         self._previous_button.clicked.connect(self.previous_requested.emit)
         self._next_button.clicked.connect(self.next_requested.emit)
+        self._mvc_button.toggled.connect(self.mvc_toggled.emit)
         self._previous_button.setToolTip("Previous event (Left Arrow)")
         self._next_button.setToolTip("Next event (Right Arrow)")
+        self._mvc_button.setToolTip("Toggle Maximum Voluntary Contraction calibration")
         navigation_layout.addWidget(self._previous_button)
         navigation_layout.addWidget(self._next_button)
         navigation_layout.addWidget(self._event_position_label)
         navigation_layout.addStretch(1)
+        navigation_layout.addWidget(self._build_legend())
+        navigation_layout.addWidget(self._mvc_button)
         root_layout.addLayout(navigation_layout)
 
         self.range_plot = pg.PlotWidget()
@@ -226,10 +267,9 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._draw_range_bars(np.zeros(len(self._bar_display_labels), dtype=np.float64))
 
     def _build_raw_grid(self, grid_layout: QtWidgets.QGridLayout) -> None:
-        columns = 5
         for finger_idx, finger_name in enumerate(self._finger_labels):
-            row = finger_idx // columns
-            col = finger_idx % columns
+            row = finger_idx // _RAW_GRID_COLUMNS
+            col = finger_idx % _RAW_GRID_COLUMNS
 
             panel = pg.PlotWidget()
             panel.setMenuEnabled(False)
@@ -250,8 +290,13 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             pen = pg.mkPen(FINGER_COLORS[finger_idx % len(FINGER_COLORS)], width=2.0)
             curve = panel.plot([], [], pen=pen)
 
+            marker = panel.plot(
+                [], [], pen=None, symbol="o", symbolSize=8, symbolBrush="#E63946", symbolPen="w"
+            )
+
             self._raw_plot_widgets.append(panel)
             self._raw_curves.append(curve)
+            self._raw_max_markers.append(marker)
             grid_layout.addWidget(panel, row, col)
 
         if not self._raw_plot_widgets:
@@ -261,6 +306,39 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         for panel in self._raw_plot_widgets[1:]:
             panel.setXLink(reference)
             panel.setYLink(reference)
+
+    def _build_legend(self) -> QtWidgets.QWidget:
+        legend_widget = QtWidgets.QWidget()
+        layout = QtWidgets.QHBoxLayout(legend_widget)
+        layout.setContentsMargins(0, 0, 16, 0)
+        layout.setSpacing(10)
+
+        title = QtWidgets.QLabel("Peak % MVC:")
+        title.setStyleSheet("color: #64748B; font-weight: 600; font-size: 11px;")
+        layout.addWidget(title)
+
+        for _threshold, text, color in _MVC_COLOR_BINS:
+            layout.addWidget(self._build_legend_item(text, color))
+
+        return legend_widget
+
+    @staticmethod
+    def _build_legend_item(text: str, color: str) -> QtWidgets.QWidget:
+        item = QtWidgets.QWidget()
+        item_layout = QtWidgets.QHBoxLayout(item)
+        item_layout.setContentsMargins(0, 0, 0, 0)
+        item_layout.setSpacing(4)
+
+        swatch = QtWidgets.QLabel()
+        swatch.setFixedSize(8, 8)
+        swatch.setStyleSheet(f"background-color: {color}; border-radius: 4px;")
+
+        label = QtWidgets.QLabel(text)
+        label.setStyleSheet("color: #64748B; font-size: 11px;")
+
+        item_layout.addWidget(swatch)
+        item_layout.addWidget(label)
+        return item
 
     def _draw_range_bars(self, heights: np.ndarray) -> None:
         if self._bar_item is not None:
@@ -306,6 +384,23 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             f"Last trigger: {datetime.now().strftime('%H:%M:%S')}"
         )
 
+    def set_mvc_session_calibrated(self, calibrated: bool) -> None:
+        """Reflect whether an MVC calibration is active for this session.
+        This only drives the status chip — axis unit labels are driven
+        per-event by `update_capture` via `CapturedWindow.is_scaled`, so
+        navigating between pre- and post-calibration events relabels the
+        axes correctly."""
+        self._mvc_status_label.setText(
+            "MVC: Calibrated ✓" if calibrated else "MVC: Uncalibrated"
+        )
+
+    def _apply_unit_labels(self, is_scaled: bool) -> None:
+        unit_label = "% MVC" if is_scaled else "a.u."
+        self.range_plot.setLabel("left", "Range", units=unit_label)
+        for i, panel in enumerate(self._raw_plot_widgets):
+            if i % _RAW_GRID_COLUMNS == 0:
+                panel.setLabel("left", "Force", units=unit_label)
+
     def set_event_navigation(self, current_index: int | None, total_events: int) -> None:
         """Refresh event navigation state and button availability."""
         if total_events <= 0 or current_index is None:
@@ -322,9 +417,20 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
 
     def update_capture(self, captured: CapturedWindow) -> None:
         """Render one captured event in both plots."""
+        self._apply_unit_labels(captured.is_scaled)
         relative_time = captured.timestamps - captured.timestamps[0]
         for finger_idx, curve in enumerate(self._raw_curves):
-            curve.setData(relative_time, captured.finger_forces[:, finger_idx])
+            force_data = captured.finger_forces[:, finger_idx]
+            curve.setData(relative_time, force_data)
+
+            marker = self._raw_max_markers[finger_idx]
+            if force_data.size > 0:
+                max_idx = int(np.argmax(force_data))
+                peak_force = float(force_data[max_idx])
+                marker.setData([float(relative_time[max_idx])], [peak_force])
+                marker.setSymbolBrush(pg.mkBrush(_mvc_bin_color(peak_force)))
+            else:
+                marker.setData([], [])
 
         if relative_time.size > 0 and self._raw_plot_widgets:
             x_max = float(relative_time[-1])

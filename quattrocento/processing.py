@@ -77,15 +77,15 @@ class TriggerWindowProcessor:
         if batch_size == 0:
             return None
 
+        # Identify rising edges seamlessly across batch boundaries
         trigger_high = self._compute_trigger_high(batch.aux_in)
-        prev_high = np.empty(batch_size, dtype=np.bool_)
-        prev_high[0] = self._previous_trigger_high
-        prev_high[1:] = trigger_high[:-1]
+        prev_high = np.concatenate(([self._previous_trigger_high], trigger_high[:-1]))
         rising_edges = trigger_high & ~prev_high
 
         self._previous_trigger_high = bool(trigger_high[-1])
 
-        if not self._capturing and not np.any(rising_edges):
+        # Fast path: skip processing if inactive and no new triggers fired
+        if not (self._capturing or np.any(rising_edges)):
             return None
 
         captured_window: CapturedWindow | None = None
@@ -161,7 +161,7 @@ class TriggerWindowProcessor:
         finger_forces, finger_labels = aggregate_finger_forces(
             sensor_forces, self._finger_sensor_map
         )
-        finger_ranges = np.max(finger_forces, axis=0) - np.min(finger_forces, axis=0)
+        finger_ranges = np.ptp(finger_forces, axis=0)
 
         self._capturing = False
         self._write_pos = 0
