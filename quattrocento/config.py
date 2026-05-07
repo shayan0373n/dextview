@@ -25,6 +25,7 @@ class QuattrocentoConfig:
 
     sample_rate_hz: int = 512
     window_seconds: float = 5.0
+    window_offset_seconds: float = 0.0
     batch_duration_seconds: float = 0.05
     trigger_threshold: float = 0.5
     ui_refresh_ms: int = 30
@@ -37,6 +38,8 @@ class QuattrocentoConfig:
             raise ValueError("sample_rate_hz must be positive")
         if self.window_seconds <= 0:
             raise ValueError("window_seconds must be positive")
+        if self.window_offset_seconds > 0:
+            raise ValueError("window_offset_seconds must be <= 0 (pre-trigger only)")
         if self.batch_duration_seconds <= 0:
             raise ValueError("batch_duration_seconds must be positive")
         if self.ui_refresh_ms <= 0:
@@ -52,6 +55,16 @@ class QuattrocentoConfig:
     def window_samples(self) -> int:
         """Number of samples to keep after each trigger edge."""
         return max(1, int(round(self.sample_rate_hz * self.window_seconds)))
+
+    @property
+    def pre_trigger_samples(self) -> int:
+        """Number of samples to keep before each trigger edge."""
+        return max(0, int(round(self.sample_rate_hz * -self.window_offset_seconds)))
+
+    @property
+    def total_window_samples(self) -> int:
+        """Total captured window length: pre-trigger + post-trigger."""
+        return self.pre_trigger_samples + self.window_samples
 
     @property
     def finger_labels(self) -> tuple[str, ...]:
