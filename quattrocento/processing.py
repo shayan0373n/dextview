@@ -26,7 +26,7 @@ class TriggerWindowProcessor:
 
     def __init__(self, config: QuattrocentoConfig) -> None:
         """Configure trigger threshold and capture window length."""
-        self._post_samples = config.window_samples
+        self._post_samples = config.post_trigger_samples
         self._pre_samples = config.pre_trigger_samples
         self._total_samples = config.total_window_samples
         self._trigger_threshold = config.trigger_threshold

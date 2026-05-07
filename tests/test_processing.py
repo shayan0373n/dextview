@@ -108,7 +108,6 @@ class TriggerWindowProcessorTests(unittest.TestCase):
         np.testing.assert_allclose(captured.timestamps, timestamps[2:6])
         self.assertEqual(captured.finger_forces.shape, (4, 10))
 
-
     def test_single_sample_pulse_triggers_capture(self) -> None:
         config = QuattrocentoConfig(sample_rate_hz=4, window_seconds=1.0)
         processor = TriggerWindowProcessor(config)
@@ -160,14 +159,14 @@ class WindowOffsetTests(unittest.TestCase):
     """
 
     RATE = 8
-    POST_SECONDS = 1.0  # post = 8 samples
-    OFFSET_SECONDS = -0.5  # pre = 4 samples
+    WINDOW_SECONDS = 1.0  # total = 8 samples (pre=4, post=4)
+    OFFSET_SECONDS = -0.5  # pre = 4 samples → post = 4 samples
     SENSORS = 10  # default finger_sensor_map size
 
     def _make_processor(self) -> TriggerWindowProcessor:
         config = QuattrocentoConfig(
             sample_rate_hz=self.RATE,
-            window_seconds=self.POST_SECONDS,
+            window_seconds=self.WINDOW_SECONDS,
             window_offset_seconds=self.OFFSET_SECONDS,
         )
         return TriggerWindowProcessor(config)
@@ -259,7 +258,7 @@ class WindowOffsetTests(unittest.TestCase):
         aux[edge:] = 5.0
         captures = self._feed(proc, ts, f, aux, batch_size=10)
         self.assertEqual(len(captures), 1)
-        self._assert_contiguous(captures[0], edge_index=edge, expected_pre=4, expected_post=8)
+        self._assert_contiguous(captures[0], edge_index=edge, expected_pre=4, expected_post=4)
 
     def test_edge_at_first_sample_of_batch(self) -> None:
         """Pre-roll comes entirely from the ring; none from the current batch."""
@@ -272,7 +271,7 @@ class WindowOffsetTests(unittest.TestCase):
         aux[edge:] = 5.0
         captures = self._feed(proc, ts, f, aux, batch_size=10)
         self.assertEqual(len(captures), 1)
-        self._assert_contiguous(captures[0], edge_index=edge, expected_pre=4, expected_post=8)
+        self._assert_contiguous(captures[0], edge_index=edge, expected_pre=4, expected_post=4)
 
     def test_edge_at_last_sample_of_batch(self) -> None:
         """Pre-roll spans ring + nearly-whole current batch; post comes from later batches."""
@@ -285,7 +284,7 @@ class WindowOffsetTests(unittest.TestCase):
         aux[edge:] = 5.0
         captures = self._feed(proc, ts, f, aux, batch_size=10)
         self.assertEqual(len(captures), 1)
-        self._assert_contiguous(captures[0], edge_index=edge, expected_pre=4, expected_post=8)
+        self._assert_contiguous(captures[0], edge_index=edge, expected_pre=4, expected_post=4)
 
     def test_edge_before_ring_full_emits_truncated_window(self) -> None:
         """Trigger fires before pre_samples have accumulated — pre-roll is short."""
@@ -298,15 +297,15 @@ class WindowOffsetTests(unittest.TestCase):
         aux[edge:] = 5.0
         captures = self._feed(proc, ts, f, aux, batch_size=8)
         self.assertEqual(len(captures), 1)
-        # Only 2 pre-roll samples available; post is the usual 8.
-        self._assert_contiguous(captures[0], edge_index=edge, expected_pre=2, expected_post=8)
+        # Only 2 pre-roll samples available; post is the usual 4.
+        self._assert_contiguous(captures[0], edge_index=edge, expected_pre=2, expected_post=4)
 
     def test_back_to_back_triggers_share_no_state(self) -> None:
         """A second trigger must see a fresh, contiguous pre-roll — proves the
         ring keeps updating during and after capture."""
         proc = self._make_processor()
         edge_a = 64
-        # Spacing: capture A's window (post=8) plus enough rest for the
+        # Spacing: capture A's window (post=4) plus enough rest for the
         # adaptive noise estimate to decay below the second pulse amplitude.
         edge_b = edge_a + 64
         n = edge_b + 16
@@ -318,61 +317,103 @@ class WindowOffsetTests(unittest.TestCase):
         aux[edge_b] = 5.0
         captures = self._feed(proc, ts, f, aux, batch_size=10)
         self.assertEqual(len(captures), 2)
-        self._assert_contiguous(captures[0], edge_index=edge_a, expected_pre=4, expected_post=8)
-        self._assert_contiguous(captures[1], edge_index=edge_b, expected_pre=4, expected_post=8)
+        self._assert_contiguous(captures[0], edge_index=edge_a, expected_pre=4, expected_post=4)
+        self._assert_contiguous(captures[1], edge_index=edge_b, expected_pre=4, expected_post=4)
 
-    def test_zero_offset_matches_no_preroll(self) -> None:
-        """Default (offset=0) behavior: zero pre-roll, trigger_index == 0."""
+    def test_zero_offset_no_preroll(self) -> None:
+        """offset=0: trigger_index == 0, full window is post-trigger."""
         config = QuattrocentoConfig(
             sample_rate_hz=self.RATE,
-            window_seconds=self.POST_SECONDS,
+            window_seconds=self.WINDOW_SECONDS,
             window_offset_seconds=0.0,
         )
         proc = TriggerWindowProcessor(config)
-        n = 64 + 16
         edge = 64
+        n = edge + self.RATE * 2
         ts, f = self._stream(n)
         aux = np.zeros(n)
         aux[edge:] = 5.0
-        captures = []
-        for s in range(0, n, 10):
-            e = min(s + 10, n)
-            out = proc.process_batch(
-                DataBatch(timestamps=ts[s:e], forces=f[s:e], aux_in=aux[s:e])
-            )
-            captures.extend(out)
+        captures = self._feed(proc, ts, f, aux, batch_size=10)
         self.assertEqual(len(captures), 1)
-        captured = captures[0]
-        self.assertEqual(captured.trigger_index, 0)
-        period = 1.0 / self.RATE
-        np.testing.assert_allclose(np.diff(captured.timestamps), np.full(7, period))
-        np.testing.assert_allclose(
-            captured.timestamps,
-            np.arange(edge, edge + 8, dtype=np.float64) / self.RATE,
-        )
+        # pre=0, post=8 (full 1.0s window)
+        self._assert_contiguous(captures[0], edge_index=edge, expected_pre=0, expected_post=8)
 
-    def test_pre_trigger_samples_rounding(self) -> None:
-        """Sub-sample offsets round to the nearest whole sample."""
-        # 1/RATE exactly → 1 sample.
-        c1 = QuattrocentoConfig(
+    def test_trigger_as_last_sample(self) -> None:
+        """Offset = -(total-1)/rate: trigger is the last sample, post=1."""
+        # 8 Hz, 1.0s total = 8 samples. Offset = -7/8s → pre=7, post=1.
+        config = QuattrocentoConfig(
             sample_rate_hz=self.RATE,
-            window_seconds=1.0,
-            window_offset_seconds=-1.0 / self.RATE,
+            window_seconds=self.WINDOW_SECONDS,
+            window_offset_seconds=-(self.WINDOW_SECONDS - 1.0 / self.RATE),
         )
-        self.assertEqual(c1.pre_trigger_samples, 1)
-        # Slightly less than half a sample → rounds to 0.
-        c2 = QuattrocentoConfig(
-            sample_rate_hz=self.RATE,
-            window_seconds=1.0,
-            window_offset_seconds=-0.4 / self.RATE,
-        )
-        self.assertEqual(c2.pre_trigger_samples, 0)
+        proc = TriggerWindowProcessor(config)
+        edge = 56
+        n = edge + 8
+        ts, f = self._stream(n)
+        aux = np.zeros(n)
+        aux[edge] = 5.0
+        captures = self._feed(proc, ts, f, aux, batch_size=8)
+        self.assertEqual(len(captures), 1)
+        self._assert_contiguous(captures[0], edge_index=edge, expected_pre=7, expected_post=1)
 
 
 class WindowOffsetConfigTests(unittest.TestCase):
     def test_positive_offset_rejected(self) -> None:
         with self.assertRaises(ValueError):
             QuattrocentoConfig(window_offset_seconds=0.1)
+
+    def test_offset_equal_to_window_rejected(self) -> None:
+        """Pre-trigger spanning the full window leaves no room for the trigger sample."""
+        with self.assertRaises(ValueError):
+            QuattrocentoConfig(
+                sample_rate_hz=8,
+                window_seconds=1.0,
+                window_offset_seconds=-1.0,
+            )
+
+    def test_post_trigger_samples_no_offset(self) -> None:
+        c = QuattrocentoConfig(sample_rate_hz=8, window_seconds=1.0)
+        self.assertEqual(c.total_window_samples, 8)
+        self.assertEqual(c.pre_trigger_samples, 0)
+        self.assertEqual(c.post_trigger_samples, 8)
+
+    def test_post_trigger_samples_with_offset(self) -> None:
+        c = QuattrocentoConfig(
+            sample_rate_hz=8,
+            window_seconds=1.0,
+            window_offset_seconds=-0.5,
+        )
+        self.assertEqual(c.total_window_samples, 8)
+        self.assertEqual(c.pre_trigger_samples, 4)
+        self.assertEqual(c.post_trigger_samples, 4)
+
+    def test_post_trigger_samples_minimum_one_sample(self) -> None:
+        """Offset just under window_seconds leaves exactly one post-trigger sample."""
+        # 8 Hz, 1.0s total = 8 samples. Offset = -7/8 s → pre=7, post=1.
+        c = QuattrocentoConfig(
+            sample_rate_hz=8,
+            window_seconds=1.0,
+            window_offset_seconds=-7.0 / 8,
+        )
+        self.assertEqual(c.pre_trigger_samples, 7)
+        self.assertEqual(c.post_trigger_samples, 1)
+
+    def test_pre_trigger_samples_rounding(self) -> None:
+        """Sub-sample offsets round to the nearest whole sample."""
+        # 1/RATE exactly → 1 sample.
+        c1 = QuattrocentoConfig(
+            sample_rate_hz=8,
+            window_seconds=1.0,
+            window_offset_seconds=-1.0 / 8,
+        )
+        self.assertEqual(c1.pre_trigger_samples, 1)
+        # Slightly less than half a sample → rounds to 0.
+        c2 = QuattrocentoConfig(
+            sample_rate_hz=8,
+            window_seconds=1.0,
+            window_offset_seconds=-0.4 / 8,
+        )
+        self.assertEqual(c2.pre_trigger_samples, 0)
 
 
 if __name__ == "__main__":

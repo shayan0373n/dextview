@@ -509,6 +509,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
                 marker.setData([], [])
 
         if relative_time.size > 0 and self._raw_plot_widgets:
+            x_min = float(relative_time[0])
             x_max = float(relative_time[-1])
             y_min = float(np.min(captured.finger_forces))
             y_max = float(np.max(captured.finger_forces))
@@ -518,7 +519,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             shared_y_max = y_max + y_padding
 
             for panel in self._raw_plot_widgets:
-                panel.setXRange(0.0, x_max, padding=0.0)
+                panel.setXRange(x_min, x_max, padding=0.0)
                 panel.setYRange(shared_y_min, shared_y_max, padding=0.0)
 
         ordered_ranges = captured.finger_ranges[np.array(self._bar_display_indices)]

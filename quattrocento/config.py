@@ -40,6 +40,11 @@ class QuattrocentoConfig:
             raise ValueError("window_seconds must be positive")
         if self.window_offset_seconds > 0:
             raise ValueError("window_offset_seconds must be <= 0 (pre-trigger only)")
+        if -self.window_offset_seconds >= self.window_seconds:
+            raise ValueError(
+                "abs(window_offset_seconds) must be less than window_seconds "
+                "(pre-trigger cannot span the entire window; trigger sample requires at least one post-trigger slot)"
+            )
         if self.batch_duration_seconds <= 0:
             raise ValueError("batch_duration_seconds must be positive")
         if self.ui_refresh_ms <= 0:
@@ -52,19 +57,19 @@ class QuattrocentoConfig:
         return len(self.finger_sensor_map)
 
     @property
-    def window_samples(self) -> int:
-        """Number of samples to keep after each trigger edge."""
+    def total_window_samples(self) -> int:
+        """Total number of samples in the capture window."""
         return max(1, int(round(self.sample_rate_hz * self.window_seconds)))
 
     @property
     def pre_trigger_samples(self) -> int:
-        """Number of samples to keep before each trigger edge."""
+        """Number of samples before the trigger edge."""
         return max(0, int(round(self.sample_rate_hz * -self.window_offset_seconds)))
 
     @property
-    def total_window_samples(self) -> int:
-        """Total captured window length: pre-trigger + post-trigger."""
-        return self.pre_trigger_samples + self.window_samples
+    def post_trigger_samples(self) -> int:
+        """Number of samples from the trigger edge to end of window (inclusive of trigger)."""
+        return max(1, self.total_window_samples - self.pre_trigger_samples)
 
     @property
     def finger_labels(self) -> tuple[str, ...]:
