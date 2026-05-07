@@ -84,12 +84,12 @@ bit: 7     6      5       4      3      2     1     0
 
 ### `NCH<1:0>` values
 
-| Bits | Active inputs |
-|---|---|
-| `11` | All inputs active |
-| `10` | `IN1`-`IN6` and `MULTIPLE IN1`-`MULTIPLE IN3` active |
-| `01` | `IN1`-`IN4`, `MULTIPLE IN1`, and `MULTIPLE IN2` active |
-| `00` | `IN1`, `IN2`, and `MULTIPLE IN1` active |
+| Bits | Active inputs | Total number of channels |
+|---|---|---|
+| `11` | All inputs active | 408 |
+| `10` | `IN1`-`IN6` and `MULTIPLE IN1`-`MULTIPLE IN3` active | 312 |
+| `01` | `IN1`-`IN4`, `MULTIPLE IN1`, and `MULTIPLE IN2` active | 216 |
+| `00` | `IN1`, `IN2`, and `MULTIPLE IN1` active | 120 |
 
 In every configuration, **eight additional accessory channels** are also transferred.
 
