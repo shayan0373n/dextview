@@ -1,50 +1,22 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any, Mapping
 
 from .protocol import (
     DEFAULT_CONF2_BYTE,
-    DEFAULT_FORCE_CHANNELS,
-    DEFAULT_INPUT_CONF2_BYTES,
     HPF_HZ_TO_BITS,
     INPUT_BLOCK_INDEX,
     INPUT_BLOCK_NAMES,
     LPF_HZ_TO_BITS,
     MODE_NAME_TO_BITS,
-    NCH_BITS_TO_NUM_CHANNELS,
     SIDE_NAME_TO_BITS,
-    SUPPORTED_SAMPLE_RATES,
 )
 
 try:
     import tomllib
 except ModuleNotFoundError:  # pragma: no cover
     import tomli as tomllib
-
-
-def _coerce_int(value: Any, field_name: str) -> int:
-    if isinstance(value, bool):
-        raise ValueError(f"{field_name} must be an integer")
-    return int(value)
-
-
-def _coerce_bool(value: Any, field_name: str) -> bool:
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, int) and value in (0, 1):
-        return bool(value)
-    raise ValueError(f"{field_name} must be a boolean")
-
-
-def _coerce_channel_indices(raw_values: Sequence[Any], field_name: str) -> tuple[int, ...]:
-    coerced: list[int] = []
-    for value in raw_values:
-        coerced.append(_coerce_int(value, field_name))
-    if not coerced:
-        raise ValueError(f"{field_name} cannot be empty")
-    return tuple(coerced)
 
 
 def _normalize_token(value: Any) -> str:
@@ -159,119 +131,31 @@ def _parse_conf2_overrides(
     return tuple(conf2_bytes)
 
 
-@dataclass(slots=True, frozen=True)
-class SocketStreamSettings:
-    """Settings for a real Quattrocento socket stream."""
+def load_input_conf2_bytes(path: str | Path) -> tuple[int, ...]:
+    """Load per-input-block conf2 bytes from a TOML file.
 
-    host: str = "169.254.1.10"
-    port: int = 23456
-    force_channel_indices: tuple[int, ...] = DEFAULT_FORCE_CHANNELS
-    aux_in_channel_index: int = 10
-    decimation_enabled: bool = True
-    socket_read_size: int = 65536
-    rec_on: bool = False
-    fsamp: int = 512
-    nch: int = 3
-    input_conf2_bytes: tuple[int, ...] = DEFAULT_INPUT_CONF2_BYTES
+    The file may contain `[conf2_defaults]` (side/hpf/lpf/mode applied to all
+    blocks) and `[conf2_overrides.<BLOCK_NAME>]` for per-block overrides.
+    Unknown top-level keys are rejected.
+    """
+    config_path = Path(path)
+    with config_path.open("rb") as handle:
+        payload = tomllib.load(handle)
 
-    def __post_init__(self) -> None:
-        if not self.host:
-            raise ValueError("host cannot be empty")
-        if self.port <= 0:
-            raise ValueError("port must be positive")
-        if self.socket_read_size <= 0:
-            raise ValueError("socket_read_size must be positive")
-        if not self.force_channel_indices:
-            raise ValueError("force_channel_indices cannot be empty")
-        if self.fsamp not in SUPPORTED_SAMPLE_RATES:
-            raise ValueError(
-                f"fsamp must be one of {SUPPORTED_SAMPLE_RATES}, got {self.fsamp}"
-            )
-        if self.nch not in NCH_BITS_TO_NUM_CHANNELS:
-            raise ValueError("nch must be one of 0, 1, 2, 3")
-        if len(self.input_conf2_bytes) != len(INPUT_BLOCK_NAMES):
-            raise ValueError(
-                f"input_conf2_bytes must contain {len(INPUT_BLOCK_NAMES)} entries"
-            )
-        for conf2 in self.input_conf2_bytes:
-            if conf2 < 0 or conf2 > 255:
-                raise ValueError("input_conf2_bytes must contain values in [0, 255]")
+    allowed = {"conf2_defaults", "conf2_overrides"}
+    unknown_fields = set(payload.keys()) - allowed
+    if unknown_fields:
+        unknown = ", ".join(sorted(unknown_fields))
+        raise ValueError(f"Unknown conf2 config field(s): {unknown}")
 
-    @classmethod
-    def from_dict(cls, payload: Mapping[str, Any]) -> SocketStreamSettings:
-        """Create settings from a TOML-compatible mapping."""
-        allowed_fields = {
-            "host",
-            "port",
-            "force_channel_indices",
-            "aux_in_channel_index",
-            "decimation_enabled",
-            "socket_read_size",
-            "rec_on",
-            "fsamp",
-            "nch",
-            "conf2_defaults",
-            "conf2_overrides",
-        }
-        unknown_fields = set(payload.keys()) - allowed_fields
-        if unknown_fields:
-            unknown = ", ".join(sorted(unknown_fields))
-            raise ValueError(f"Unknown socket settings field(s): {unknown}")
+    default_byte = _parse_conf2_block(
+        payload.get("conf2_defaults"),
+        default_byte=DEFAULT_CONF2_BYTE,
+        block_name="conf2_defaults",
+    )
+    return _parse_conf2_overrides(
+        payload.get("conf2_overrides"),
+        default_byte=default_byte,
+    )
 
-        defaults = cls()
 
-        host = str(payload.get("host", defaults.host))
-        port = _coerce_int(payload.get("port", defaults.port), "port")
-        aux_channel = _coerce_int(
-            payload.get("aux_in_channel_index", defaults.aux_in_channel_index),
-            "aux_in_channel_index",
-        )
-        socket_read_size = _coerce_int(
-            payload.get("socket_read_size", defaults.socket_read_size),
-            "socket_read_size",
-        )
-        decimation_enabled = _coerce_bool(
-            payload.get("decimation_enabled", defaults.decimation_enabled),
-            "decimation_enabled",
-        )
-        rec_on = _coerce_bool(payload.get("rec_on", defaults.rec_on), "rec_on")
-        fsamp = _coerce_int(payload.get("fsamp", defaults.fsamp), "fsamp")
-        nch = _coerce_int(payload.get("nch", defaults.nch), "nch")
-
-        raw_force_channels = payload.get("force_channel_indices", defaults.force_channel_indices)
-        if not isinstance(raw_force_channels, Sequence) or isinstance(raw_force_channels, str):
-            raise ValueError("force_channel_indices must be a sequence of integers")
-        force_channel_indices = _coerce_channel_indices(
-            raw_force_channels, "force_channel_indices"
-        )
-
-        conf2_defaults = _parse_conf2_block(
-            payload.get("conf2_defaults"),
-            default_byte=DEFAULT_CONF2_BYTE,
-            block_name="conf2_defaults",
-        )
-        input_conf2_bytes = _parse_conf2_overrides(
-            payload.get("conf2_overrides"),
-            default_byte=conf2_defaults,
-        )
-
-        return cls(
-            host=host,
-            port=port,
-            force_channel_indices=force_channel_indices,
-            aux_in_channel_index=aux_channel,
-            decimation_enabled=decimation_enabled,
-            socket_read_size=socket_read_size,
-            rec_on=rec_on,
-            fsamp=fsamp,
-            nch=nch,
-            input_conf2_bytes=input_conf2_bytes,
-        )
-
-    @classmethod
-    def from_toml_file(cls, path: str | Path) -> SocketStreamSettings:
-        """Load settings from a TOML file path."""
-        config_path = Path(path)
-        with config_path.open("rb") as handle:
-            payload = tomllib.load(handle)
-        return cls.from_dict(payload)

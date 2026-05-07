@@ -60,6 +60,19 @@ LPF_HZ_TO_BITS = {
 }
 
 
+def smallest_nch_for_channel_count(min_channels: int) -> int:
+    """Return the smallest nch bit-code whose channel count >= min_channels."""
+    if min_channels <= 0:
+        raise ValueError(f"min_channels must be positive, got {min_channels}")
+    for nch_code in sorted(NCH_BITS_TO_NUM_CHANNELS):
+        if NCH_BITS_TO_NUM_CHANNELS[nch_code] >= min_channels:
+            return nch_code
+    raise ValueError(
+        f"No nch configuration supports {min_channels} channels "
+        f"(max is {max(NCH_BITS_TO_NUM_CHANNELS.values())})"
+    )
+
+
 def _crc8(values: Sequence[int], length: int) -> int:
     crc = 0
     index = 0
@@ -82,37 +95,42 @@ def _crc8(values: Sequence[int], length: int) -> int:
     return crc
 
 
-def build_quattrocento_command(
+def build_start_command(
     *,
     decimation_enabled: bool,
     rec_on: bool,
     fsamp: int,
     nch: int,
     input_conf2_bytes: tuple[int, ...],
-    start_acquisition: bool,
 ) -> bytes:
-    """Encode a 40-byte Quattrocento command frame."""
+    """Encode a 40-byte Quattrocento start-acquisition command frame."""
     command = [0] * _COMMAND_LENGTH
 
-    if start_acquisition:
-        acq_sett = (
-            0b10000000
-            + (0b01000000 if decimation_enabled else 0)
-            + (0b00100000 if rec_on else 0)
-            + _FSAMP_BITS[fsamp]
-            + _NCH_TO_BITS[nch]
-            + 1
-        )
-        command[0] = acq_sett
-        command[1] = 9
-        command[2] = 0
+    acq_sett = (
+        0b10000000
+        + (0b01000000 if decimation_enabled else 0)
+        + (0b00100000 if rec_on else 0)
+        + _FSAMP_BITS[fsamp]
+        + _NCH_TO_BITS[nch]
+        + 1
+    )
+    command[0] = acq_sett
+    command[1] = 9
+    command[2] = 0
 
-        for input_idx, base in enumerate(range(3, _COMMAND_LENGTH - 1, 3)):
-            command[base] = 0
-            command[base + 1] = 0
-            command[base + 2] = input_conf2_bytes[input_idx]
-    else:
-        command[0] = 0b10000000
+    for input_idx, base in enumerate(range(3, _COMMAND_LENGTH - 1, 3)):
+        command[base] = 0
+        command[base + 1] = 0
+        command[base + 2] = input_conf2_bytes[input_idx]
 
     command[-1] = _crc8(command, _COMMAND_LENGTH - 1)
     return bytes(command)
+
+
+def build_stop_command() -> bytes:
+    """Encode a 40-byte Quattrocento stop-acquisition command frame."""
+    command = [0] * _COMMAND_LENGTH
+    command[0] = 0b10000000
+    command[-1] = _crc8(command, _COMMAND_LENGTH - 1)
+    return bytes(command)
+

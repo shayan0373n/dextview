@@ -1,172 +1,106 @@
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 import socket
+from typing import Literal
 
 import numpy as np
-from numpy.typing import NDArray
 
 from .config import QuattrocentoConfig
 from .models import DataBatch
-from .protocol import NCH_BITS_TO_NUM_CHANNELS, build_quattrocento_command
-from .settings import SocketStreamSettings
+from .protocol import (
+    DEFAULT_INPUT_CONF2_BYTES,
+    NCH_BITS_TO_NUM_CHANNELS,
+    SUPPORTED_SAMPLE_RATES,
+    build_start_command,
+    build_stop_command,
+)
+
+HandshakeKind = Literal["real", "rebroadcast"]
 
 
-class QuattrocentoStream(ABC):
-    """Abstract batch stream API used by the controller."""
+class QuattrocentoStream:
+    """TCP batch stream for a Quattrocento device or rebroadcast server."""
 
-    @abstractmethod
-    def read_batch(self) -> DataBatch:
-        """Read the next batch of samples from the data source."""
-
-    def close(self) -> None:
-        """Release any underlying resources."""
-
-
-class MockQuattrocentoStream(QuattrocentoStream):
-    """Deterministic mock source that simulates force sensors and AUX-in pulses."""
+    _SOCKET_READ_SIZE = 65536
+    _MAX_READ_BYTES_PER_TICK = 10 * 1024 * 1024
+    _MAX_BUFFER_BYTES = 50 * 1024 * 1024
+    _REBROADCAST_HEADER_BYTES = 8
 
     def __init__(
         self,
         config: QuattrocentoConfig,
-        trigger_interval_seconds: float = 8.0,
-        trigger_duration_seconds: float = 0.03,
-        trigger_start_delay_seconds: float = 1.0,
-        random_seed: int = 7,
+        *,
+        handshake_kind: HandshakeKind,
+        host: str,
+        port: int,
+        n_channels: int,
+        force_channel_indices: tuple[int, ...],
+        aux_in_channel_index: int,
+        # Real-mode specific settings:
+        nch: int | None = None,
+        decimation_enabled: bool = True,
+        rec_on: bool = False,
+        input_conf2_bytes: tuple[int, ...] = DEFAULT_INPUT_CONF2_BYTES,
     ) -> None:
-        """Initialize mock signal and AUX-in trigger generation."""
-        if trigger_interval_seconds <= 0:
-            raise ValueError("trigger_interval_seconds must be positive")
-        if trigger_duration_seconds <= 0:
-            raise ValueError("trigger_duration_seconds must be positive")
-        if trigger_start_delay_seconds < 0:
-            raise ValueError("trigger_start_delay_seconds cannot be negative")
-
-        self._config = config
-        self._trigger_interval_seconds = trigger_interval_seconds
-        self._trigger_duration_seconds = trigger_duration_seconds
-        self._trigger_start_delay_seconds = trigger_start_delay_seconds
-        self._sample_index = 0
-        self._samples_per_batch = max(
-            1, int(round(config.sample_rate_hz * config.batch_duration_seconds))
-        )
-        self._rng = np.random.default_rng(random_seed)
-
-        sensor_count = config.sensor_count
-        self._phase_offsets = np.linspace(0.1, 2.2, sensor_count, endpoint=True)
-        self._base_frequencies_hz = np.linspace(0.28, 0.7, sensor_count, endpoint=True)
-        self._event_profile = np.linspace(7.0, 12.0, sensor_count, endpoint=True)
-
-    def read_batch(self) -> DataBatch:
-        """Return the next fixed-size time block of synthesized data."""
-        sample_indices = np.arange(
-            self._sample_index, self._sample_index + self._samples_per_batch, dtype=np.int64
-        )
-        timestamps = sample_indices.astype(np.float64) / self._config.sample_rate_hz
-        forces = self._synthesize_forces(timestamps)
-        aux_in = self._synthesize_aux_in(timestamps)
-
-        self._sample_index += self._samples_per_batch
-        return DataBatch(timestamps=timestamps, forces=forces, aux_in=aux_in)
-
-    def _synthesize_forces(self, timestamps: NDArray[np.float64]) -> NDArray[np.float64]:
-        base_force = 18.0 + (
-            2.7
-            * np.sin(
-                2.0
-                * np.pi
-                * self._base_frequencies_hz[np.newaxis, :]
-                * timestamps[:, np.newaxis]
-                + self._phase_offsets[np.newaxis, :]
-            )
-        )
-        slow_modulation = 0.8 * np.sin(
-            2.0 * np.pi * 0.6 * timestamps[:, np.newaxis]
-            + (0.6 * self._phase_offsets[np.newaxis, :])
-        )
-        noise = self._rng.normal(0.0, 0.35, size=base_force.shape)
-
-        event_envelope = self._event_envelope(timestamps)
-        event_response = event_envelope[:, np.newaxis] * self._event_profile[np.newaxis, :]
-
-        forces = base_force + slow_modulation + noise + event_response
-        return np.clip(forces, a_min=0.0, a_max=None)
-
-    def _synthesize_aux_in(self, timestamps: NDArray[np.float64]) -> NDArray[np.float64]:
-        baseline = 0.06 * np.sin(2.0 * np.pi * 0.45 * timestamps)
-        noise = self._rng.normal(0.0, 0.025, size=timestamps.shape[0])
-        trigger = baseline + noise
-
-        active_mask = timestamps >= self._trigger_start_delay_seconds
-        if np.any(active_mask):
-            phase = np.mod(
-                timestamps[active_mask] - self._trigger_start_delay_seconds,
-                self._trigger_interval_seconds,
-            )
-            pulse = (phase < self._trigger_duration_seconds).astype(np.float64)
-            trigger[active_mask] += 1.2 * pulse
-
-        return np.clip(trigger, a_min=0.0, a_max=1.5)
-
-    def _event_envelope(self, timestamps: NDArray[np.float64]) -> NDArray[np.float64]:
-        event = np.zeros_like(timestamps, dtype=np.float64)
-        active_mask = timestamps >= self._trigger_start_delay_seconds
-        if not np.any(active_mask):
-            return event
-
-        phase = np.mod(
-            timestamps[active_mask] - self._trigger_start_delay_seconds,
-            self._trigger_interval_seconds,
-        )
-        event[active_mask] = np.exp(-0.5 * np.square((phase - 1.15) / 0.55))
-        return event
-
-
-class SocketQuattrocentoStream(QuattrocentoStream):
-    """TCP stream client for a real Quattrocento device."""
-
-    def __init__(self, config: QuattrocentoConfig, settings: SocketStreamSettings) -> None:
-        """Initialize socket stream configuration and channel mapping."""
-        if config.sample_rate_hz != settings.fsamp:
+        if n_channels <= 0:
+            raise ValueError("n_channels must be positive")
+        if len(force_channel_indices) != config.sensor_count:
             raise ValueError(
-                "QuattrocentoConfig sample_rate_hz must match socket settings fsamp "
-                f"({config.sample_rate_hz} != {settings.fsamp})"
+                "force_channel_indices must contain exactly "
+                f"{config.sensor_count} channels"
             )
-        if settings.fsamp % 16 != 0:
-            raise ValueError("fsamp must be divisible by 16 in socket mode")
+        if len(set(force_channel_indices)) != len(force_channel_indices):
+            raise ValueError("force_channel_indices must not contain duplicates")
+        for channel_index in force_channel_indices:
+            self._validate_channel_index(channel_index, n_channels, "force channel")
+        self._validate_channel_index(
+            aux_in_channel_index, n_channels, "aux_in_channel_index"
+        )
+
+        if handshake_kind == "real":
+            if config.sample_rate_hz not in SUPPORTED_SAMPLE_RATES:
+                raise ValueError(
+                    f"sample_rate_hz must be one of {SUPPORTED_SAMPLE_RATES}, "
+                    f"got {config.sample_rate_hz}"
+                )
+            if nch not in NCH_BITS_TO_NUM_CHANNELS:
+                raise ValueError("nch must be one of 0, 1, 2, 3")
 
         self._config = config
-        self._settings = settings
-        self._host = settings.host
-        self._port = settings.port
-        self._num_channels = NCH_BITS_TO_NUM_CHANNELS[settings.nch]
-        self._samples_per_packet = settings.fsamp // 16
-        self._bytes_per_packet = 2 * self._num_channels * self._samples_per_packet
-        self._socket_read_size = settings.socket_read_size
+        self._handshake_kind = handshake_kind
+        self._host = host
+        self._port = port
+        self._n_channels = n_channels
+        self._frame_bytes = 2 * n_channels
+        self._force_channel_indices = force_channel_indices
+        self._aux_in_channel_index = aux_in_channel_index
         self._sample_index = 0
 
-        self._force_channel_indices = settings.force_channel_indices
-        self._aux_in_channel_index = settings.aux_in_channel_index
-        self._validate_channel_selection()
+        # Handshake-specific state
+        self._nch = nch
+        self._decimation_enabled = decimation_enabled
+        self._rec_on = rec_on
+        self._input_conf2_bytes = input_conf2_bytes
 
         self._socket: socket.socket | None = None
         self._byte_buffer = bytearray()
 
     def read_batch(self) -> DataBatch:
-        """Read all complete packets currently available from the TCP stream."""
+        """Read all complete samples currently available from the TCP stream."""
         self._ensure_connected()
         self._drain_socket()
 
-        packet_count = len(self._byte_buffer) // self._bytes_per_packet
-        if packet_count == 0:
+        sample_count = len(self._byte_buffer) // self._frame_bytes
+        if sample_count == 0:
             return self._empty_batch()
 
-        bytes_to_parse = packet_count * self._bytes_per_packet
+        bytes_to_parse = sample_count * self._frame_bytes
         raw = bytes(self._byte_buffer[:bytes_to_parse])
         del self._byte_buffer[:bytes_to_parse]
 
-        sample_count = packet_count * self._samples_per_packet
-        channel_matrix = np.frombuffer(raw, dtype="<i2").reshape(sample_count, self._num_channels)
+        channel_matrix = np.frombuffer(raw, dtype="<i2").reshape(
+            sample_count, self._n_channels
+        )
         force_matrix = channel_matrix[:, self._force_channel_indices].astype(np.float64)
         aux_in = channel_matrix[:, self._aux_in_channel_index].astype(np.float64)
 
@@ -185,8 +119,7 @@ class SocketQuattrocentoStream(QuattrocentoStream):
 
         try:
             self._socket.setblocking(True)
-            stop_command = self._build_command(start_acquisition=False)
-            self._socket.sendall(stop_command)
+            self._stop_acquisition(self._socket)
         except OSError:
             pass
         finally:
@@ -196,23 +129,41 @@ class SocketQuattrocentoStream(QuattrocentoStream):
                 self._socket = None
                 self._byte_buffer.clear()
 
-    def _validate_channel_selection(self) -> None:
-        if len(self._force_channel_indices) != self._config.sensor_count:
-            raise ValueError(
-                "force_channel_indices must contain exactly "
-                f"{self._config.sensor_count} channels"
+    def _start_acquisition(self, sock: socket.socket) -> None:
+        """Send the start handshake on a freshly connected socket."""
+        if self._handshake_kind == "real":
+            assert self._nch is not None
+            sock.sendall(
+                build_start_command(
+                    decimation_enabled=self._decimation_enabled,
+                    rec_on=self._rec_on,
+                    fsamp=self._config.sample_rate_hz,
+                    nch=self._nch,
+                    input_conf2_bytes=self._input_conf2_bytes,
+                )
             )
-        if len(set(self._force_channel_indices)) != len(self._force_channel_indices):
-            raise ValueError("force_channel_indices must not contain duplicates")
+        else:
+            sock.sendall(b"startTX")
+            # Burn the 8-byte BioLab rebroadcast header.
+            header = bytearray()
+            while len(header) < self._REBROADCAST_HEADER_BYTES:
+                chunk = sock.recv(self._REBROADCAST_HEADER_BYTES - len(header))
+                if not chunk:
+                    raise ConnectionError("Rebroadcast socket closed before header arrived")
+                header.extend(chunk)
 
-        for channel_index in self._force_channel_indices:
-            self._validate_channel_index(channel_index, "force channel")
-        self._validate_channel_index(self._aux_in_channel_index, "aux_in_channel_index")
+    def _stop_acquisition(self, sock: socket.socket) -> None:
+        """Send the stop command before closing."""
+        if self._handshake_kind == "real":
+            sock.sendall(build_stop_command())
+        else:
+            sock.sendall(b"stopTX")
 
-    def _validate_channel_index(self, channel_index: int, label: str) -> None:
-        if channel_index < 0 or channel_index >= self._num_channels:
+    @staticmethod
+    def _validate_channel_index(channel_index: int, n_channels: int, label: str) -> None:
+        if channel_index < 0 or channel_index >= n_channels:
             raise ValueError(
-                f"{label} index {channel_index} must be between 0 and {self._num_channels - 1}"
+                f"{label} index {channel_index} must be between 0 and {n_channels - 1}"
             )
 
     def _ensure_connected(self) -> None:
@@ -223,8 +174,7 @@ class SocketQuattrocentoStream(QuattrocentoStream):
         try:
             tcp_socket.settimeout(3.0)
             tcp_socket.connect((self._host, self._port))
-            start_command = self._build_command(start_acquisition=True)
-            tcp_socket.sendall(start_command)
+            self._start_acquisition(tcp_socket)
             tcp_socket.setblocking(False)
         except BaseException:
             tcp_socket.close()
@@ -232,26 +182,17 @@ class SocketQuattrocentoStream(QuattrocentoStream):
         self._socket = tcp_socket
         self._byte_buffer.clear()
 
-    def _build_command(self, *, start_acquisition: bool) -> bytes:
-        return build_quattrocento_command(
-            decimation_enabled=self._settings.decimation_enabled,
-            rec_on=self._settings.rec_on,
-            fsamp=self._settings.fsamp,
-            nch=self._settings.nch,
-            input_conf2_bytes=self._settings.input_conf2_bytes,
-            start_acquisition=start_acquisition,
-        )
-
     def _drain_socket(self) -> None:
         if self._socket is None:
             return
 
-        max_read_bytes = 10 * 1024 * 1024  # 10 MB limit per tick
         bytes_read = 0
-
-        while bytes_read < max_read_bytes:
+        while bytes_read < self._MAX_READ_BYTES_PER_TICK:
             try:
-                read_size = min(self._socket_read_size, max_read_bytes - bytes_read)
+                read_size = min(
+                    self._SOCKET_READ_SIZE,
+                    self._MAX_READ_BYTES_PER_TICK - bytes_read,
+                )
                 chunk = self._socket.recv(read_size)
             except BlockingIOError:
                 break
@@ -262,7 +203,7 @@ class SocketQuattrocentoStream(QuattrocentoStream):
                 self._socket.close()
                 self._socket = None
                 self._byte_buffer.clear()
-                raise ConnectionError("Quattrocento socket closed the connection")
+                raise ConnectionError("Stream socket closed the connection")
 
             self._byte_buffer.extend(chunk)
             bytes_read += len(chunk)
@@ -270,13 +211,10 @@ class SocketQuattrocentoStream(QuattrocentoStream):
             if len(chunk) < read_size:
                 break
 
-        max_buffer_size = 50 * 1024 * 1024  # 50 MB cap
-        if len(self._byte_buffer) > max_buffer_size:
-            excess_bytes = len(self._byte_buffer) - max_buffer_size
-            packets_to_drop = (excess_bytes + self._bytes_per_packet - 1) // self._bytes_per_packet
-            bytes_to_drop = packets_to_drop * self._bytes_per_packet
-            samples_to_drop = packets_to_drop * self._samples_per_packet
-
+        if len(self._byte_buffer) > self._MAX_BUFFER_BYTES:
+            excess_bytes = len(self._byte_buffer) - self._MAX_BUFFER_BYTES
+            samples_to_drop = (excess_bytes + self._frame_bytes - 1) // self._frame_bytes
+            bytes_to_drop = samples_to_drop * self._frame_bytes
             del self._byte_buffer[:bytes_to_drop]
             self._sample_index += samples_to_drop
 

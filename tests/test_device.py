@@ -2,40 +2,39 @@ import unittest
 from unittest.mock import Mock, patch
 
 from quattrocento.config import QuattrocentoConfig
-from quattrocento.device import SocketQuattrocentoStream
-from quattrocento.settings import SocketStreamSettings
+from quattrocento.device import QuattrocentoStream
 
 
-class TestSocketQuattrocentoStream(unittest.TestCase):
+class TestQuattrocentoStream(unittest.TestCase):
     def setUp(self):
         self.config = QuattrocentoConfig(sample_rate_hz=512)
-        self.settings = SocketStreamSettings(
-            fsamp=512,
+        self.stream = QuattrocentoStream(
+            self.config,
+            handshake_kind="real",
+            host="169.254.1.10",
+            port=23456,
             nch=3,
-            socket_read_size=65536,
             force_channel_indices=tuple(range(10)),
             aux_in_channel_index=10,
+            n_channels=408,  # NCH 3 is 408 channels
         )
-        self.stream = SocketQuattrocentoStream(self.config, self.settings)
 
     @patch("socket.socket")
-    def test_drain_socket_buffer_capping_preserves_packet_alignment(self, mock_socket_cls):
+    def test_drain_socket_buffer_capping_preserves_frame_alignment(self, mock_socket_cls):
         mock_sock = Mock()
         mock_socket_cls.return_value = mock_sock
 
         self.stream._ensure_connected()
 
-        bytes_per_packet = self.stream._bytes_per_packet
-        samples_per_packet = self.stream._samples_per_packet
+        frame_bytes = self.stream._frame_bytes
         max_buffer_size = 50 * 1024 * 1024
-        partial_packet_size = 17
 
-        prefill_packets = (45 * 1024 * 1024) // bytes_per_packet
-        initial_buffer_size = prefill_packets * bytes_per_packet + partial_packet_size
+        prefill_samples = (45 * 1024 * 1024) // frame_bytes
+        initial_buffer_size = prefill_samples * frame_bytes
         self.stream._byte_buffer.extend(b"p" * initial_buffer_size)
 
-        payload_packets = (10 * 1024 * 1024) // bytes_per_packet
-        payload = b"x" * (payload_packets * bytes_per_packet)
+        payload_samples = (10 * 1024 * 1024) // frame_bytes
+        payload = b"x" * (payload_samples * frame_bytes)
         payload_offset = 0
 
         def mock_recv(size):
@@ -51,13 +50,13 @@ class TestSocketQuattrocentoStream(unittest.TestCase):
 
         total_size_before_cap = initial_buffer_size + len(payload)
         excess_bytes = total_size_before_cap - max_buffer_size
-        expected_dropped_packets = (excess_bytes + bytes_per_packet - 1) // bytes_per_packet
+        expected_dropped_samples = (excess_bytes + frame_bytes - 1) // frame_bytes
 
         self.stream._drain_socket()
 
         self.assertLessEqual(len(self.stream._byte_buffer), max_buffer_size)
-        self.assertEqual(len(self.stream._byte_buffer) % bytes_per_packet, partial_packet_size)
-        self.assertEqual(self.stream._sample_index, expected_dropped_packets * samples_per_packet)
+        self.assertEqual(len(self.stream._byte_buffer) % frame_bytes, 0)
+        self.assertEqual(self.stream._sample_index, expected_dropped_samples)
 
 
 if __name__ == "__main__":

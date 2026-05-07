@@ -1,0 +1,21 @@
+# Per-input-block hardware config for the Quattrocento (real source only).
+#
+# Encoded into the INx_CONF2 / MULTIPLE_INx_CONF2 bytes of the device command.
+# All other settings (host, port, fsamp, nch, channels, etc.) are CLI args.
+#
+# Allowed values:
+# - side: not_defined | left | right | none | 0..3
+# - hpf:  0.7 | 10 | 100 | 200 | 0..3
+# - lpf:  130 | 500 | 900 | 4400 | 0..3
+# - mode: monopolar | differential | bipolar | 0..3
+[conf2_defaults]
+side = "not_defined"
+hpf = 10
+lpf = 500
+mode = "monopolar"
+
+# Optional per-input overrides for:
+# IN1..IN8, MULTIPLE_IN1..MULTIPLE_IN4
+[conf2_overrides]
+# IN1 = { hpf = 100, lpf = 900, mode = "bipolar" }
+# MULTIPLE_IN1 = { mode = "differential" }
