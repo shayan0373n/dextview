@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Sequence
+from typing import Callable, Sequence
 
 import numpy as np
 import pyqtgraph as pg
@@ -103,6 +103,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
 
     previous_requested = QtCore.pyqtSignal()
     next_requested = QtCore.pyqtSignal()
+    rest_toggled = QtCore.pyqtSignal(bool)
     mvc_toggled = QtCore.pyqtSignal(bool)
 
     def __init__(self, finger_labels: Sequence[str]) -> None:
@@ -119,13 +120,17 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._acquisition_label = QtWidgets.QLabel("State: Waiting for trigger")
         self._last_trigger_label = QtWidgets.QLabel("Last trigger: -")
         self._sampling_label = QtWidgets.QLabel("Sample rate: -")
-        self._mvc_status_label = QtWidgets.QLabel("MVC: Uncalibrated")
+        self._mvc_status_label = QtWidgets.QLabel("Cal: Rest ✗ | MVC ✗")
         self._event_position_label = QtWidgets.QLabel("Viewing: -/-")
         self._previous_button = QtWidgets.QPushButton("< Prev")
         self._next_button = QtWidgets.QPushButton("Next >")
+        self._rest_button = QtWidgets.QPushButton("Calibrate Rest")
+        self._rest_button.setObjectName("restButton")
+        self._rest_button.setCheckable(True)
         self._mvc_button = QtWidgets.QPushButton("Calibrate MVC")
         self._mvc_button.setObjectName("mvcButton")
         self._mvc_button.setCheckable(True)
+        self._hook_controls_layout: QtWidgets.QHBoxLayout | None = None
         self._raw_plot_widgets: list[pg.PlotWidget] = []
         self._raw_curves: list[pg.PlotDataItem] = []
         self._raw_max_markers: list[pg.PlotDataItem] = []
@@ -136,7 +141,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._build_layout()
         self._install_navigation_shortcuts()
         self.set_event_navigation(current_index=None, total_events=0)
-        self.set_mvc_session_calibrated(False)
+        self.set_calibration_status(False, False)
         self._apply_unit_labels(is_scaled=False)
 
     def _apply_palette(self) -> None:
@@ -184,9 +189,19 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             QPushButton:hover:!disabled {
                 background: #CCDDF0;
             }
+            QPushButton#restButton:checked {
+                background: #0077B6;
+                border-color: #005A8C;
+                color: white;
+            }
             QPushButton#mvcButton:checked {
                 background: #E63946;
                 border-color: #D62828;
+                color: white;
+            }
+            QPushButton#hookToggle:checked {
+                background: #2A9D8F;
+                border-color: #1E7268;
                 color: white;
             }
             """
@@ -227,16 +242,22 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._event_position_label.setObjectName("eventPosition")
         self._previous_button.clicked.connect(self.previous_requested.emit)
         self._next_button.clicked.connect(self.next_requested.emit)
+        self._rest_button.toggled.connect(self.rest_toggled.emit)
         self._mvc_button.toggled.connect(self.mvc_toggled.emit)
         self._previous_button.setToolTip("Previous event (Left Arrow)")
         self._next_button.setToolTip("Next event (Right Arrow)")
+        self._rest_button.setToolTip("Toggle Rest (baseline) calibration")
         self._mvc_button.setToolTip("Toggle Maximum Voluntary Contraction calibration")
+        self._hook_controls_layout = QtWidgets.QHBoxLayout()
+        self._hook_controls_layout.setSpacing(8)
         navigation_layout.addWidget(self._previous_button)
         navigation_layout.addWidget(self._next_button)
         navigation_layout.addWidget(self._event_position_label)
         navigation_layout.addStretch(1)
         navigation_layout.addWidget(self._build_legend())
+        navigation_layout.addWidget(self._rest_button)
         navigation_layout.addWidget(self._mvc_button)
+        navigation_layout.addLayout(self._hook_controls_layout)
         root_layout.addLayout(navigation_layout)
 
         self.range_plot = pg.PlotWidget()
@@ -367,6 +388,39 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._next_shortcut.setContext(Qt.WindowShortcut)
         self._next_shortcut.activated.connect(self.next_requested.emit)
 
+    def add_hook_controls(
+        self,
+        name: str,
+        *,
+        on_toggle: Callable[[bool], None],
+        on_reset: Callable[[], None],
+    ) -> None:
+        """Add a toggle + reset button pair for one registered hook."""
+        toggle_btn = QtWidgets.QPushButton(name)
+        toggle_btn.setObjectName("hookToggle")
+        toggle_btn.setCheckable(True)
+        toggle_btn.toggled.connect(on_toggle)
+
+        reset_btn = QtWidgets.QPushButton("Reset")
+        reset_btn.clicked.connect(on_reset)
+
+        self._hook_controls_layout.addWidget(toggle_btn)
+        self._hook_controls_layout.addWidget(reset_btn)
+
+    def revert_rest_button(self) -> None:
+        self._rest_button.blockSignals(True)
+        self._rest_button.setChecked(False)
+        self._rest_button.blockSignals(False)
+
+    def revert_mvc_button(self) -> None:
+        self._mvc_button.blockSignals(True)
+        self._mvc_button.setChecked(False)
+        self._mvc_button.blockSignals(False)
+
+    def show_error(self, message: str) -> None:
+        """Display a warning dialog with the given message."""
+        QtWidgets.QMessageBox.warning(self, "Error", message)
+
     def set_stream_error(self) -> None:
         """Indicate that the stream has disconnected or failed."""
         self._acquisition_label.setText("State: Stream error")
@@ -384,15 +438,37 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             f"Last trigger: {datetime.now().strftime('%H:%M:%S')}"
         )
 
-    def set_mvc_session_calibrated(self, calibrated: bool) -> None:
-        """Reflect whether an MVC calibration is active for this session.
-        This only drives the status chip — axis unit labels are driven
-        per-event by `update_capture` via `CapturedWindow.is_scaled`, so
-        navigating between pre- and post-calibration events relabels the
-        axes correctly."""
-        self._mvc_status_label.setText(
-            "MVC: Calibrated ✓" if calibrated else "MVC: Uncalibrated"
-        )
+    def set_calibration_status(self, rest_calibrated: bool, mvc_calibrated: bool) -> None:
+        """Reflect whether Rest and MVC calibrations are active for this session."""
+        rest_mark = "✓" if rest_calibrated else "✗"
+        mvc_mark = "✓" if mvc_calibrated else "✗"
+        self._mvc_status_label.setText(f"Cal: Rest {rest_mark} | MVC {mvc_mark}")
+
+    def show_calibration_report(
+        self,
+        finger_labels: Sequence[str],
+        rest_means: np.ndarray | None,
+        mvc_maxs: np.ndarray | None,
+    ) -> None:
+        """Pop up a per-finger summary of the current calibration state."""
+        header = f"{'Finger':<10} {'Rest':>10} {'MVC':>10} {'Span':>10}"
+        rows = [header, "-" * len(header)]
+        for i, label in enumerate(finger_labels):
+            rest_val = "—" if rest_means is None else f"{rest_means[i]:.2f}"
+            mvc_val = "—" if mvc_maxs is None else f"{mvc_maxs[i]:.2f}"
+            if rest_means is not None and mvc_maxs is not None:
+                span_val = f"{mvc_maxs[i] - rest_means[i]:.2f}"
+            else:
+                span_val = "—"
+            rows.append(f"{label:<10} {rest_val:>10} {mvc_val:>10} {span_val:>10}")
+
+        dialog = QtWidgets.QMessageBox(self)
+        dialog.setWindowTitle("Calibration Report")
+        dialog.setIcon(QtWidgets.QMessageBox.Information)
+        dialog.setText("Per-finger calibration values:")
+        dialog.setFont(QtGui.QFont("Courier New", 10))
+        dialog.setInformativeText("\n".join(rows))
+        dialog.exec_()
 
     def _apply_unit_labels(self, is_scaled: bool) -> None:
         unit_label = "% MVC" if is_scaled else "a.u."
@@ -418,7 +494,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
     def update_capture(self, captured: CapturedWindow) -> None:
         """Render one captured event in both plots."""
         self._apply_unit_labels(captured.is_scaled)
-        relative_time = captured.timestamps - captured.timestamps[0]
+        relative_time = captured.timestamps - captured.timestamps[captured.trigger_index]
         for finger_idx, curve in enumerate(self._raw_curves):
             force_data = captured.finger_forces[:, finger_idx]
             curve.setData(relative_time, force_data)
