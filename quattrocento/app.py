@@ -70,7 +70,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--window-seconds",
         type=float,
         default=5.0,
-        help="Capture window length after trigger.",
+        help="Total capture window length (including pre-trigger offset).",
     )
     common.add_argument(
         "--window-offset",
@@ -79,8 +79,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=0.0,
         help=(
             "Pre-trigger offset in seconds. Negative or zero. "
-            "E.g. -0.5 captures 0.5 s before each trigger in addition to "
-            "--window-seconds after it."
+            "E.g. -1.0 with a 5.0s window captures 1.0s before the "
+            "trigger and 4.0s after it."
         ),
     )
     common.add_argument(
