@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Callable, Sequence
+from typing import Callable, Mapping, Sequence
 
 import numpy as np
 import pyqtgraph as pg
@@ -12,11 +12,9 @@ from .models import CapturedWindow
 
 
 _RAW_GRID_COLUMNS = 5
+_EXPECTED_FINGER_COUNT = 10
 
 # Peak-force bins used to color the per-finger max marker and the legend.
-# Each entry is (upper_threshold_inclusive, display_label, hex_color).
-# The final bin uses +inf as a catch-all. Single source of truth for both
-# the legend swatches and the marker color lookup.
 _MVC_COLOR_BINS: tuple[tuple[float, str, str], ...] = (
     (5.0, "≤5", "#A0AEC0"),
     (10.0, "≤10", "#F6E05E"),
@@ -103,33 +101,52 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
 
     previous_requested = QtCore.pyqtSignal()
     next_requested = QtCore.pyqtSignal()
-    rest_toggled = QtCore.pyqtSignal(bool)
-    mvc_toggled = QtCore.pyqtSignal(bool)
+    baseline_toggled = QtCore.pyqtSignal(bool)
+    peak_toggled = QtCore.pyqtSignal(bool)
 
-    def __init__(self, finger_labels: Sequence[str]) -> None:
-        """Create the UI for finger-range and raw-force event plots."""
+    def __init__(
+        self,
+        channel_labels: Mapping[int, str],
+        trigger_channel: int,
+    ) -> None:
         super().__init__()
-        self._finger_labels = tuple(finger_labels)
-        self._bar_display_indices, self._bar_display_labels = _build_mirrored_bar_layout(
-            self._finger_labels
+
+        # Ordered non-trigger finger channels, sorted by channel index.
+        finger_channels = sorted(
+            (idx, label)
+            for idx, label in channel_labels.items()
+            if idx != trigger_channel
         )
-        self._bar_x = np.arange(len(self._bar_display_labels), dtype=np.float64)
+        if len(finger_channels) != _EXPECTED_FINGER_COUNT:
+            raise ValueError(
+                f"Expected exactly {_EXPECTED_FINGER_COUNT} labeled non-trigger "
+                f"channels, got {len(finger_channels)}. "
+                "Update your channels file."
+            )
+        self._finger_channel_indices: list[int] = [idx for idx, _ in finger_channels]
+        self._finger_labels: tuple[str, ...] = tuple(label for _, label in finger_channels)
+
+        # Bar display order (mirrored hand layout if labels parse correctly).
+        bar_local_indices, bar_labels = _build_mirrored_bar_layout(self._finger_labels)
+        self._bar_display_indices: tuple[int, ...] = bar_local_indices
+        self._bar_display_labels: tuple[str, ...] = bar_labels
+        self._bar_x = np.arange(len(bar_labels), dtype=np.float64)
         self._bar_item: pg.BarGraphItem | None = None
 
         self._capture_count_label = QtWidgets.QLabel("Events: 0")
         self._acquisition_label = QtWidgets.QLabel("State: Waiting for trigger")
         self._last_trigger_label = QtWidgets.QLabel("Last trigger: -")
         self._sampling_label = QtWidgets.QLabel("Sample rate: -")
-        self._mvc_status_label = QtWidgets.QLabel("Cal: Rest ✗ | MVC ✗")
+        self._cal_status_label = QtWidgets.QLabel("Cal: Rest ✗ | MVC ✗")
         self._event_position_label = QtWidgets.QLabel("Viewing: -/-")
         self._previous_button = QtWidgets.QPushButton("< Prev")
         self._next_button = QtWidgets.QPushButton("Next >")
-        self._rest_button = QtWidgets.QPushButton("Calibrate Rest")
-        self._rest_button.setObjectName("restButton")
-        self._rest_button.setCheckable(True)
-        self._mvc_button = QtWidgets.QPushButton("Calibrate MVC")
-        self._mvc_button.setObjectName("mvcButton")
-        self._mvc_button.setCheckable(True)
+        self._baseline_button = QtWidgets.QPushButton("Calibrate Rest")
+        self._baseline_button.setObjectName("restButton")
+        self._baseline_button.setCheckable(True)
+        self._peak_button = QtWidgets.QPushButton("Calibrate MVC")
+        self._peak_button.setObjectName("mvcButton")
+        self._peak_button.setCheckable(True)
         self._hook_controls_layout: QtWidgets.QHBoxLayout | None = None
         self._raw_plot_widgets: list[pg.PlotWidget] = []
         self._raw_curves: list[pg.PlotDataItem] = []
@@ -141,8 +158,8 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._build_layout()
         self._install_navigation_shortcuts()
         self.set_event_navigation(current_index=None, total_events=0)
-        self.set_calibration_status(False, False)
-        self._apply_unit_labels(is_scaled=False)
+        self.set_calibration_status(baseline_done=False, peak_done=False)
+        self._apply_unit_labels("a.u.")
 
     def _apply_palette(self) -> None:
         pg.setConfigOptions(antialias=True, foreground="#27313D", background="#F4F7FB")
@@ -230,7 +247,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             self._capture_count_label,
             self._last_trigger_label,
             self._sampling_label,
-            self._mvc_status_label,
+            self._cal_status_label,
         ):
             chip.setProperty("kind", "chip")
             chips_layout.addWidget(chip)
@@ -242,12 +259,12 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._event_position_label.setObjectName("eventPosition")
         self._previous_button.clicked.connect(self.previous_requested.emit)
         self._next_button.clicked.connect(self.next_requested.emit)
-        self._rest_button.toggled.connect(self.rest_toggled.emit)
-        self._mvc_button.toggled.connect(self.mvc_toggled.emit)
+        self._baseline_button.toggled.connect(self.baseline_toggled.emit)
+        self._peak_button.toggled.connect(self.peak_toggled.emit)
         self._previous_button.setToolTip("Previous event (Left Arrow)")
         self._next_button.setToolTip("Next event (Right Arrow)")
-        self._rest_button.setToolTip("Toggle Rest (baseline) calibration")
-        self._mvc_button.setToolTip("Toggle Maximum Voluntary Contraction calibration")
+        self._baseline_button.setToolTip("Toggle Rest (baseline) calibration")
+        self._peak_button.setToolTip("Toggle Maximum Voluntary Contraction calibration")
         self._hook_controls_layout = QtWidgets.QHBoxLayout()
         self._hook_controls_layout.setSpacing(8)
         navigation_layout.addWidget(self._previous_button)
@@ -255,8 +272,8 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         navigation_layout.addWidget(self._event_position_label)
         navigation_layout.addStretch(1)
         navigation_layout.addWidget(self._build_legend())
-        navigation_layout.addWidget(self._rest_button)
-        navigation_layout.addWidget(self._mvc_button)
+        navigation_layout.addWidget(self._baseline_button)
+        navigation_layout.addWidget(self._peak_button)
         navigation_layout.addLayout(self._hook_controls_layout)
         root_layout.addLayout(navigation_layout)
 
@@ -312,7 +329,8 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             curve = panel.plot([], [], pen=pen)
 
             marker = panel.plot(
-                [], [], pen=None, symbol="o", symbolSize=8, symbolBrush="#E63946", symbolPen="w"
+                [], [], pen=None, symbol="o", symbolSize=8,
+                symbolBrush="#E63946", symbolPen="w"
             )
 
             self._raw_plot_widgets.append(panel)
@@ -395,7 +413,6 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         on_toggle: Callable[[bool], None],
         on_reset: Callable[[], None],
     ) -> None:
-        """Add a toggle + reset button pair for one registered hook."""
         toggle_btn = QtWidgets.QPushButton(name)
         toggle_btn.setObjectName("hookToggle")
         toggle_btn.setCheckable(True)
@@ -407,78 +424,71 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._hook_controls_layout.addWidget(toggle_btn)
         self._hook_controls_layout.addWidget(reset_btn)
 
-    def revert_rest_button(self) -> None:
-        self._rest_button.blockSignals(True)
-        self._rest_button.setChecked(False)
-        self._rest_button.blockSignals(False)
+    def revert_baseline_button(self) -> None:
+        self._baseline_button.blockSignals(True)
+        self._baseline_button.setChecked(False)
+        self._baseline_button.blockSignals(False)
 
-    def revert_mvc_button(self) -> None:
-        self._mvc_button.blockSignals(True)
-        self._mvc_button.setChecked(False)
-        self._mvc_button.blockSignals(False)
+    def revert_peak_button(self) -> None:
+        self._peak_button.blockSignals(True)
+        self._peak_button.setChecked(False)
+        self._peak_button.blockSignals(False)
 
     def show_error(self, message: str) -> None:
-        """Display a warning dialog with the given message."""
         QtWidgets.QMessageBox.warning(self, "Error", message)
 
     def set_stream_error(self) -> None:
-        """Indicate that the stream has disconnected or failed."""
         self._acquisition_label.setText("State: Stream error")
 
     def set_stream_state(self, sample_rate_hz: int, captures: int, capturing: bool) -> None:
-        """Update acquisition status chips."""
         state_text = "Capturing window..." if capturing else "Waiting for trigger"
         self._acquisition_label.setText(f"State: {state_text}")
         self._capture_count_label.setText(f"Events: {captures}")
         self._sampling_label.setText(f"Sample rate: {sample_rate_hz} Hz")
 
     def set_last_trigger_now(self) -> None:
-        """Stamp the status area with the current local trigger time."""
         self._last_trigger_label.setText(
             f"Last trigger: {datetime.now().strftime('%H:%M:%S')}"
         )
 
-    def set_calibration_status(self, rest_calibrated: bool, mvc_calibrated: bool) -> None:
-        """Reflect whether Rest and MVC calibrations are active for this session."""
-        rest_mark = "✓" if rest_calibrated else "✗"
-        mvc_mark = "✓" if mvc_calibrated else "✗"
-        self._mvc_status_label.setText(f"Cal: Rest {rest_mark} | MVC {mvc_mark}")
+    def set_calibration_status(self, baseline_done: bool, peak_done: bool) -> None:
+        rest_mark = "✓" if baseline_done else "✗"
+        mvc_mark = "✓" if peak_done else "✗"
+        self._cal_status_label.setText(f"Cal: Rest {rest_mark} | MVC {mvc_mark}")
 
     def show_calibration_report(
         self,
-        finger_labels: Sequence[str],
-        rest_means: np.ndarray | None,
-        mvc_maxs: np.ndarray | None,
+        display_channels: list[tuple[int, str]],
+        baseline: np.ndarray | None,
+        peak: np.ndarray | None,
     ) -> None:
-        """Pop up a per-finger summary of the current calibration state."""
-        header = f"{'Finger':<10} {'Rest':>10} {'MVC':>10} {'Span':>10}"
+        """Pop up a per-channel calibration summary."""
+        header = f"{'Channel':<12} {'Rest':>10} {'MVC':>10} {'Span':>10}"
         rows = [header, "-" * len(header)]
-        for i, label in enumerate(finger_labels):
-            rest_val = "—" if rest_means is None else f"{rest_means[i]:.2f}"
-            mvc_val = "—" if mvc_maxs is None else f"{mvc_maxs[i]:.2f}"
-            if rest_means is not None and mvc_maxs is not None:
-                span_val = f"{mvc_maxs[i] - rest_means[i]:.2f}"
+        for ch_idx, label in display_channels:
+            rest_val = "—" if baseline is None else f"{baseline[ch_idx]:.2f}"
+            mvc_val = "—" if peak is None else f"{peak[ch_idx]:.2f}"
+            if baseline is not None and peak is not None:
+                span_val = f"{peak[ch_idx] - baseline[ch_idx]:.2f}"
             else:
                 span_val = "—"
-            rows.append(f"{label:<10} {rest_val:>10} {mvc_val:>10} {span_val:>10}")
+            rows.append(f"{label:<12} {rest_val:>10} {mvc_val:>10} {span_val:>10}")
 
         dialog = QtWidgets.QMessageBox(self)
         dialog.setWindowTitle("Calibration Report")
         dialog.setIcon(QtWidgets.QMessageBox.Information)
-        dialog.setText("Per-finger calibration values:")
+        dialog.setText("Per-channel calibration values:")
         dialog.setFont(QtGui.QFont("Courier New", 10))
         dialog.setInformativeText("\n".join(rows))
         dialog.exec_()
 
-    def _apply_unit_labels(self, is_scaled: bool) -> None:
-        unit_label = "% MVC" if is_scaled else "a.u."
-        self.range_plot.setLabel("left", "Range", units=unit_label)
+    def _apply_unit_labels(self, unit: str) -> None:
+        self.range_plot.setLabel("left", "Range", units=unit)
         for i, panel in enumerate(self._raw_plot_widgets):
             if i % _RAW_GRID_COLUMNS == 0:
-                panel.setLabel("left", "Force", units=unit_label)
+                panel.setLabel("left", "Force", units=unit)
 
     def set_event_navigation(self, current_index: int | None, total_events: int) -> None:
-        """Refresh event navigation state and button availability."""
         if total_events <= 0 or current_index is None:
             self._event_position_label.setText("Viewing: -/-")
             self._previous_button.setEnabled(False)
@@ -493,13 +503,27 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
 
     def update_capture(self, captured: CapturedWindow) -> None:
         """Render one captured event in both plots."""
-        self._apply_unit_labels(captured.is_scaled)
-        relative_time = captured.timestamps - captured.timestamps[captured.trigger_index]
-        for finger_idx, curve in enumerate(self._raw_curves):
-            force_data = captured.finger_forces[:, finger_idx]
+        sig = captured.batch.signals
+        if captured.meta.baseline is not None and captured.meta.peak is not None:
+            span = captured.meta.peak - captured.meta.baseline
+            safe_span = np.where(span != 0, span, 1.0)
+            sig = (sig - captured.meta.baseline) / safe_span * 100.0
+            unit = "% MVC"
+        else:
+            unit = "a.u."
+        self._apply_unit_labels(unit)
+
+        relative_time = (
+            captured.batch.timestamps
+            - captured.batch.timestamps[captured.trigger_sample]
+        )
+
+        for local_idx, curve in enumerate(self._raw_curves):
+            ch_idx = self._finger_channel_indices[local_idx]
+            force_data = sig[:, ch_idx]
             curve.setData(relative_time, force_data)
 
-            marker = self._raw_max_markers[finger_idx]
+            marker = self._raw_max_markers[local_idx]
             if force_data.size > 0:
                 max_idx = int(np.argmax(force_data))
                 peak_force = float(force_data[max_idx])
@@ -508,21 +532,22 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             else:
                 marker.setData([], [])
 
+        finger_signals = sig[:, self._finger_channel_indices]
         if relative_time.size > 0 and self._raw_plot_widgets:
             x_min = float(relative_time[0])
             x_max = float(relative_time[-1])
-            y_min = float(np.min(captured.finger_forces))
-            y_max = float(np.max(captured.finger_forces))
+            y_min = float(np.min(finger_signals))
+            y_max = float(np.max(finger_signals))
             y_span = y_max - y_min
             y_padding = max(0.8, y_span * 0.08)
-            shared_y_min = y_min - y_padding
-            shared_y_max = y_max + y_padding
 
             for panel in self._raw_plot_widgets:
                 panel.setXRange(x_min, x_max, padding=0.0)
-                panel.setYRange(shared_y_min, shared_y_max, padding=0.0)
-
-        ordered_ranges = captured.finger_ranges[np.array(self._bar_display_indices)]
+                panel.setYRange(y_min - y_padding, y_max + y_padding, padding=0.0)
+        ordered_ranges = np.ptp(
+            finger_signals[:, list(self._bar_display_indices)], axis=0
+        )
         self._draw_range_bars(ordered_ranges)
-        y_max = float(np.max(ordered_ranges))
-        self.range_plot.setYRange(0.0, max(1.0, y_max * 1.2), padding=0.0)
+        self.range_plot.setYRange(
+            0.0, max(1.0, float(np.max(ordered_ranges)) * 1.2), padding=0.0
+        )

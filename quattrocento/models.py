@@ -11,52 +11,55 @@ from numpy.typing import NDArray
 class DataBatch:
     """One contiguous sample block from the stream."""
 
-    timestamps: NDArray[np.float64]
-    forces: NDArray[np.float64]
-    aux_in: NDArray[np.float64]
+    timestamps: NDArray[np.float64]   # (samples,)
+    signals: NDArray[np.float64]      # (samples, n_total_channels)
 
 
 @dataclass(slots=True, frozen=True)
 class StreamMeta:
-    """Static + calibration context passed alongside raw data to hooks.
+    """Session-level context shared by stream hooks and embedded in captured windows.
 
-    Hooks receive raw `DataBatch` / `CapturedWindow` plus this object and
-    are responsible for any derived computations (e.g. % MVC scaling).
-    `rest_means` and `mvc_maxs` are per-finger, ordered to match
-    `finger_labels`. They are `None` until calibration has completed.
+    `channel_labels` maps channel index → display label for a sparse subset of
+    channels. `baseline` and `peak` are per-channel calibration references with
+    the same width as `DataBatch.signals`; they are `None` until calibration
+    has completed. Consumers that want %-normalised values compute
+    `(signals - baseline) / (peak - baseline) * 100` themselves.
     """
 
-    finger_sensor_map: Mapping[str, int]
-    finger_labels: tuple[str, ...]
+    channel_labels: Mapping[int, str]
     sample_rate_hz: int
-    rest_means: NDArray[np.float64] | None = None
-    mvc_maxs: NDArray[np.float64] | None = None
+    trigger_channel: int
+    baseline: NDArray[np.float64] | None = None  # (n_total_channels,)
+    peak: NDArray[np.float64] | None = None       # (n_total_channels,)
+
+    def index_of(self, label: str) -> int:
+        """Return the channel index for a label; raises KeyError if absent."""
+        for idx, lbl in self.channel_labels.items():
+            if lbl == label:
+                return idx
+        raise KeyError(label)
 
 
 @dataclass(slots=True, frozen=True)
 class CapturedWindow:
-    """Processed post-trigger window used for visualization.
+    """A self-contained record of one trigger event.
 
-    Windows may span multiple DataBatches — samples are copied into a
-    fixed-length buffer until the post-trigger window is full.
-    `is_scaled` records whether `finger_forces`/`finger_ranges` have
-    been normalized to % MVC, so downstream display can label units
-    correctly without tracking session state.
+    Composition of a DataBatch (the captured samples), the StreamMeta
+    snapshot at capture time, and the sample index within the batch where the
+    trigger edge fired. All context needed to interpret or re-process the event
+    travels with the window — no external session state required.
     """
 
-    timestamps: NDArray[np.float64]
-    finger_forces: NDArray[np.float64]
-    finger_ranges: NDArray[np.float64]
-    finger_labels: tuple[str, ...]
-    is_scaled: bool = False
-    trigger_index: int = 0
+    batch: DataBatch
+    meta: StreamMeta
+    trigger_sample: int
 
 
 class _Hook(Protocol):
     """Shared interface for all hooks registered with the controller."""
 
     name: str
-    ui_controls: bool  # True → controller creates a toggle + reset button pair
+    ui_controls: bool
 
     def set_active(self, active: bool) -> None: ...
     def reset(self) -> None: ...
@@ -65,16 +68,19 @@ class _Hook(Protocol):
 class StreamHook(_Hook, Protocol):
     """Hook called with every live data batch.
 
-    Data Contract:
-    - `batch.forces` contains raw 16-bit counts from the device.
-    - `meta.rest_means` and `meta.mvc_maxs` are also in raw 16-bit counts.
-    Hooks requiring %-MVC or physical units must perform their own scaling.
+    Data contract: `batch.signals` contains raw 16-bit counts for all device
+    channels. `meta.baseline` and `meta.peak` are also in raw 16-bit counts.
+    Hooks requiring %-normalised values must perform their own scaling.
     """
 
     def __call__(self, batch: DataBatch, meta: StreamMeta) -> None: ...
 
 
 class EventHook(_Hook, Protocol):
-    """Hook called once per completed capture window."""
+    """Hook called once per completed capture window.
 
-    def __call__(self, window: CapturedWindow, meta: StreamMeta) -> None: ...
+    The window is self-contained: it carries its own `StreamMeta` snapshot
+    taken at capture time, so hooks do not need a separate meta argument.
+    """
+
+    def __call__(self, window: CapturedWindow) -> None: ...

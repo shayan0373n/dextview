@@ -12,7 +12,7 @@ Wire format matches what the rebroadcast client expects:
   `n_channels` int16s per frame.
 - Channel layout:
     - Channels 0..9: synthesized force signals (sinusoids + event envelopes).
-    - Channel 10: aux-in trigger pulse.
+    - Channel 10: trigger pulse (pass `--trigger-channel=10` when connecting).
     - Channel n_channels-8: monotonic ramp (used by detection).
     - All other channels: low-amplitude baseline noise.
 - Accepts text command `stopTX` to stop streaming. The connection stays open
