@@ -14,13 +14,12 @@ TRIGGER_CH = 10
 def _meta(config: QuattrocentoConfig) -> StreamMeta:
     return StreamMeta(
         channel_labels={i: f"ch{i}" for i in range(N_CHANNELS)},
-        sample_rate_hz=config.sample_rate_hz,
-        trigger_channel=TRIGGER_CH,
+        config=config,
     )
 
 
 def _processor(config: QuattrocentoConfig) -> TriggerWindowProcessor:
-    return TriggerWindowProcessor(config, N_CHANNELS)
+    return TriggerWindowProcessor(config)
 
 
 def _batch(
@@ -39,7 +38,7 @@ def _batch(
 
 class TriggerWindowProcessorTests(unittest.TestCase):
     def test_capture_collects_next_window_after_rising_edge(self) -> None:
-        config = QuattrocentoConfig(sample_rate_hz=4, window_seconds=1.0)
+        config = QuattrocentoConfig(sample_rate_hz=4, n_channels=N_CHANNELS, window_seconds=1.0, trigger_channel=TRIGGER_CH)
         proc = _processor(config)
         meta = _meta(config)
 
@@ -61,7 +60,7 @@ class TriggerWindowProcessorTests(unittest.TestCase):
         np.testing.assert_allclose(captured.batch.timestamps, timestamps[1:5])
 
     def test_multiple_captures_in_single_batch(self) -> None:
-        config = QuattrocentoConfig(sample_rate_hz=10, window_seconds=0.5)
+        config = QuattrocentoConfig(sample_rate_hz=10, n_channels=N_CHANNELS, window_seconds=0.5, trigger_channel=TRIGGER_CH)
         proc = _processor(config)
         meta = _meta(config)
 
@@ -82,7 +81,7 @@ class TriggerWindowProcessorTests(unittest.TestCase):
         np.testing.assert_allclose(captured_list[1].batch.timestamps, timestamps[10:15])
 
     def test_capture_detects_trigger_with_high_aux_baseline(self) -> None:
-        config = QuattrocentoConfig(sample_rate_hz=4, window_seconds=1.0)
+        config = QuattrocentoConfig(sample_rate_hz=4, n_channels=N_CHANNELS, window_seconds=1.0, trigger_channel=TRIGGER_CH)
         proc = _processor(config)
         meta = _meta(config)
 
@@ -109,7 +108,7 @@ class TriggerWindowProcessorTests(unittest.TestCase):
         self.assertEqual(captured_list[0].batch.signals.shape, (4, N_CHANNELS))
 
     def test_single_sample_pulse_triggers_capture(self) -> None:
-        config = QuattrocentoConfig(sample_rate_hz=4, window_seconds=1.0)
+        config = QuattrocentoConfig(sample_rate_hz=4, n_channels=N_CHANNELS, window_seconds=1.0, trigger_channel=TRIGGER_CH)
         proc = _processor(config)
         meta = _meta(config)
 
@@ -133,7 +132,7 @@ class TriggerWindowProcessorTests(unittest.TestCase):
 
     def test_trigger_signal_preserved_in_capture(self) -> None:
         """The trigger channel is stored in signals, so loggers get it automatically."""
-        config = QuattrocentoConfig(sample_rate_hz=4, window_seconds=1.0)
+        config = QuattrocentoConfig(sample_rate_hz=4, n_channels=N_CHANNELS, window_seconds=1.0, trigger_channel=TRIGGER_CH)
         proc = _processor(config)
         meta = _meta(config)
 
@@ -167,16 +166,17 @@ class WindowOffsetTests(unittest.TestCase):
     def _make_processor(self) -> TriggerWindowProcessor:
         config = QuattrocentoConfig(
             sample_rate_hz=self.RATE,
+            n_channels=N_CHANNELS,
             window_seconds=self.WINDOW_SECONDS,
             window_offset_seconds=self.OFFSET_SECONDS,
+            trigger_channel=TRIGGER_CH,
         )
-        return TriggerWindowProcessor(config, N_CHANNELS)
+        return TriggerWindowProcessor(config)
 
     def _make_meta(self) -> StreamMeta:
         return StreamMeta(
             channel_labels={i: f"ch{i}" for i in range(N_CHANNELS)},
-            sample_rate_hz=self.RATE,
-            trigger_channel=TRIGGER_CH,
+            config=QuattrocentoConfig(sample_rate_hz=self.RATE, n_channels=N_CHANNELS, trigger_channel=TRIGGER_CH),
         )
 
     def _stream(self, n: int) -> tuple[np.ndarray, np.ndarray]:
@@ -308,14 +308,15 @@ class WindowOffsetTests(unittest.TestCase):
     def test_zero_offset_no_preroll(self) -> None:
         config = QuattrocentoConfig(
             sample_rate_hz=self.RATE,
+            n_channels=N_CHANNELS,
             window_seconds=self.WINDOW_SECONDS,
             window_offset_seconds=0.0,
+            trigger_channel=TRIGGER_CH,
         )
-        proc = TriggerWindowProcessor(config, N_CHANNELS)
+        proc = TriggerWindowProcessor(config)
         meta = StreamMeta(
             channel_labels={i: f"ch{i}" for i in range(N_CHANNELS)},
-            sample_rate_hz=self.RATE,
-            trigger_channel=TRIGGER_CH,
+            config=config,
         )
         edge = 64
         n = edge + self.RATE * 2
@@ -329,14 +330,15 @@ class WindowOffsetTests(unittest.TestCase):
     def test_trigger_as_last_sample(self) -> None:
         config = QuattrocentoConfig(
             sample_rate_hz=self.RATE,
+            n_channels=N_CHANNELS,
             window_seconds=self.WINDOW_SECONDS,
             window_offset_seconds=-(self.WINDOW_SECONDS - 1.0 / self.RATE),
+            trigger_channel=TRIGGER_CH,
         )
-        proc = TriggerWindowProcessor(config, N_CHANNELS)
+        proc = TriggerWindowProcessor(config)
         meta = StreamMeta(
             channel_labels={i: f"ch{i}" for i in range(N_CHANNELS)},
-            sample_rate_hz=self.RATE,
-            trigger_channel=TRIGGER_CH,
+            config=config,
         )
         edge = 56
         n = edge + 8

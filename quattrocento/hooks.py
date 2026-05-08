@@ -43,7 +43,6 @@ class _ForceMeterDialog(QtWidgets.QDialog):
 
         self._bar = QtWidgets.QProgressBar()
         self._bar.setOrientation(QtCore.Qt.Vertical)
-        # 0.1% resolution: scale by 10.
         self._bar.setRange(0, int(round(max_pct * 10)))
         self._bar.setTextVisible(False)
         layout.addWidget(self._bar, stretch=1, alignment=QtCore.Qt.AlignHCenter)
@@ -185,10 +184,7 @@ class _RampOnsetDetector:
 
 
 class _LabJackPulse:
-    """Manages a LabJack T4 connection and fires a 5 ms TTL pulse on FIO4.
-
-    The labjack driver is imported on open() so hosts without the driver
-    installed are unaffected until the hook is activated."""
+    """Manages a LabJack T4 connection and fires a 5 ms TTL pulse on FIO4."""
 
     def __init__(self) -> None:
         self._ljm: object | None = None
@@ -214,9 +210,9 @@ class _LabJackPulse:
 class PassedTenPercentRightIndex:
     """Compositor: wires _RampOnsetDetector → _ForceMeterDialog → _LabJackPulse.
 
-    Stays inert until `set_active(True)` (e.g. via the UI button). On
-    activation a small always-on-top dialog opens showing R Index force as
-    % MVC; it closes on deactivation. Designed for a 0%→20% ramp ~5 s long.
+    Stays inert until `set_active(True)`. On activation a small always-on-top
+    dialog opens showing R Index force as % MVC; it closes on deactivation.
+    Designed for a 0%→20% ramp ~5 s long.
     """
 
     name = "R Index 10% MVC"
@@ -247,7 +243,6 @@ class PassedTenPercentRightIndex:
         self._meter: _ForceMeterDialog | None = None
 
     def set_active(self, active: bool) -> None:
-        """Arm or disarm. Opens/closes the LabJack handle and shows/hides the meter."""
         self._detector.reset()
         if active:
             self._hw.open()
@@ -268,29 +263,34 @@ class PassedTenPercentRightIndex:
     def __call__(self, batch: DataBatch, meta: StreamMeta) -> None:
         if not self._active:
             return
-        if meta.rest_means is None or meta.mvc_maxs is None:
+        if meta.baseline is None or meta.peak is None:
             if self._meter is not None:
                 self._meter.set_status("Calibration missing")
             return
         if batch.timestamps.shape[0] == 0:
             return
 
-        finger = "R Index"
-        i = meta.finger_labels.index(finger)
-        sensor = meta.finger_sensor_map[finger]
-        rest = meta.rest_means[i]
-        span = meta.mvc_maxs[i] - rest
+        label = "R Index"
+        try:
+            i = meta.index_of(label)
+        except KeyError:
+            if self._meter is not None:
+                self._meter.set_status(f"Channel '{label}' not found in labels")
+            return
+
+        baseline = meta.baseline[i]
+        span = meta.peak[i] - baseline
         if span == 0:
             if self._meter is not None:
                 self._meter.set_status("Zero MVC span — recalibrate")
             return
 
-        pct = (batch.forces[:, sensor] - rest) / span * 100.0
+        pct = (batch.signals[:, i] - baseline) / span * 100.0
         if self._meter is not None:
             self._meter.set_pct(float(pct[-1]))
 
         prev_onset = self._detector.onset_t
-        crossing_t = self._detector.update(pct, batch.timestamps, meta.sample_rate_hz)
+        crossing_t = self._detector.update(pct, batch.timestamps, meta.config.sample_rate_hz)
         new_onset = self._detector.onset_t
 
         if prev_onset is None and new_onset is not None:

@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Protocol
 
+from .config import QuattrocentoConfig
+
 import numpy as np
 from numpy.typing import NDArray
 
@@ -12,7 +14,7 @@ class DataBatch:
     """One contiguous sample block from the stream."""
 
     timestamps: NDArray[np.float64]   # (samples,)
-    signals: NDArray[np.float64]      # (samples, n_total_channels)
+    signals: NDArray[np.float64]      # (samples, n_channels)
 
 
 @dataclass(slots=True, frozen=True)
@@ -27,10 +29,9 @@ class StreamMeta:
     """
 
     channel_labels: Mapping[int, str]
-    sample_rate_hz: int
-    trigger_channel: int
-    baseline: NDArray[np.float64] | None = None  # (n_total_channels,)
-    peak: NDArray[np.float64] | None = None       # (n_total_channels,)
+    config: QuattrocentoConfig
+    baseline: NDArray[np.float64] | None = None  # (n_channels,)
+    peak: NDArray[np.float64] | None = None       # (n_channels,)
 
     def index_of(self, label: str) -> int:
         """Return the channel index for a label; raises KeyError if absent."""

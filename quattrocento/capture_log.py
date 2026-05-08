@@ -4,15 +4,15 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from .models import CapturedWindow, StreamMeta
+from .models import CapturedWindow
 
 
 class CaptureLogger:
     """Write each CapturedWindow to its own JSON file under a session dir.
 
     Implements the `EventHook` contract: instances are callable as
-    ``logger(captured, meta)`` and pull current calibration values from
-    ``meta`` rather than from controller-private state.
+    ``logger(window)`` and are fully self-contained — all context needed to
+    interpret the capture travels inside the window itself.
     """
 
     name = "Capture Logger"
@@ -34,22 +34,28 @@ class CaptureLogger:
     def reset(self) -> None:
         pass
 
-    def __call__(self, captured: CapturedWindow, meta: StreamMeta) -> None:
+    def __call__(self, window: CapturedWindow) -> None:
         self._count += 1
         path = self._session_dir / f"event_{self._count:05d}.json"
         payload = {
-            "trigger_index": int(captured.trigger_index),
-            "is_scaled": bool(captured.is_scaled),
-            "finger_labels": list(captured.finger_labels),
-            "finger_ranges": captured.finger_ranges.tolist(),
-            "rest_means": (
-                meta.rest_means.tolist() if meta.rest_means is not None else None
+            "trigger_sample": window.trigger_sample,
+            "trigger_channel": window.meta.config.trigger_channel,
+            "sample_rate_hz": window.meta.config.sample_rate_hz,
+            "channel_labels": {
+                str(k): v for k, v in window.meta.channel_labels.items()
+            },
+            "baseline": (
+                window.meta.baseline.tolist()
+                if window.meta.baseline is not None
+                else None
             ),
-            "mvc_maxs": (
-                meta.mvc_maxs.tolist() if meta.mvc_maxs is not None else None
+            "peak": (
+                window.meta.peak.tolist()
+                if window.meta.peak is not None
+                else None
             ),
-            "timestamps": captured.timestamps.tolist(),
-            "finger_forces": captured.finger_forces.tolist(),
+            "timestamps": window.batch.timestamps.tolist(),
+            "signals": window.batch.signals.tolist(),
         }
         with path.open("w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)

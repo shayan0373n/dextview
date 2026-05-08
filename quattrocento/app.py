@@ -9,10 +9,12 @@ logger = logging.getLogger("quattrocento.app")
 from PyQt5 import QtCore, QtWidgets
 
 from .capture_log import CaptureLogger
+from .channels import load_channels
 from .hooks import PassedTenPercentRightIndex
 from .config import QuattrocentoConfig
 from .controller import QuattrocentoController
 from .device import QuattrocentoStream
+from .models import StreamMeta
 from .processing import TriggerWindowProcessor
 from .protocol import (
     DEFAULT_INPUT_CONF2_BYTES,
@@ -23,17 +25,6 @@ from .protocol import (
 from .rebroadcast_detect import detect_stream_params
 from .settings import load_input_conf2_bytes
 from .ui import QuattrocentoMainWindow
-
-
-def _parse_channel_list(raw: str) -> tuple[int, ...]:
-    if not raw.strip():
-        raise argparse.ArgumentTypeError("channel list cannot be empty")
-    try:
-        return tuple(int(part.strip()) for part in raw.split(","))
-    except ValueError as exc:
-        raise argparse.ArgumentTypeError(
-            f"invalid channel list {raw!r}: must be comma-separated integers"
-        ) from exc
 
 
 def _parse_auto_or_int(raw: str) -> str | int:
@@ -49,9 +40,6 @@ def _parse_auto_or_int(raw: str) -> str | int:
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse CLI arguments for the Quattrocento application."""
-    # Validation for source-specific required args lives in _build_real_stream /
-    # _build_rebroadcast_stream rather than here. If a third source is added, or
-    # per-source arg lists diverge further, migrate to argparse subparsers instead.
     parser = argparse.ArgumentParser(
         description="Run the Quattrocento trigger-based force GUI."
     )
@@ -65,6 +53,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "device; 'rebroadcast' connects to OT BioLab+ (or the bundled "
             "simulator: python -m quattrocento.simulator)."
         ),
+    )
+    common.add_argument(
+        "--channels",
+        required=True,
+        metavar="FILE",
+        help=(
+            "TOML file defining channel labels and optionally trigger_channel. "
+            "See examples/channels_default.toml for format."
+        ),
+    )
+    common.add_argument(
+        "--trigger-channel",
+        type=int,
+        required=True,
+        dest="trigger_channel",
+        help="Index of the trigger channel.",
     )
     common.add_argument(
         "--window-seconds",
@@ -103,25 +107,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     common.add_argument(
         "--n-channels", dest="n_channels", type=_parse_auto_or_int, default=None,
         help=(
-            "Number of channels. Real source: integer (resolves to the "
-            "smallest device configuration >= this value). Rebroadcast: "
-            "integer or 'auto'."
-        ),
-    )
-    common.add_argument(
-        "--force-channels", type=_parse_channel_list, default=None,
-        help=(
-            "Comma-separated list of 10 force channel indices. Order matters: "
-            "L Thumb, L Index, L Middle, L Ring, L Little, "
-            "R Thumb, R Index, R Middle, R Ring, R Little. "
-            "Required for --source=real. Rebroadcast defaults to channels 0-9."
-        ),
-    )
-    common.add_argument(
-        "--aux-in-channel", type=int, default=None,
-        help=(
-            "Index of the aux-in/trigger channel. "
-            "Required for --source=real. Rebroadcast defaults to the last channel."
+            "Number of channels. Real source: integer. Rebroadcast: integer or 'auto'."
         ),
     )
     common.add_argument(
@@ -148,7 +134,28 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def _build_real_stream(args: argparse.Namespace) -> tuple[QuattrocentoConfig, QuattrocentoStream]:
+def _validate_channel_indices(
+    channel_labels: dict[int, str],
+    trigger_channel: int,
+    n_channels: int,
+) -> None:
+    for idx, label in channel_labels.items():
+        if idx >= n_channels:
+            raise SystemExit(
+                f"Channel label {label!r} has index {idx} but stream only "
+                f"has {n_channels} channels (indices 0–{n_channels - 1})."
+            )
+    if trigger_channel >= n_channels:
+        raise SystemExit(
+            f"Trigger channel {trigger_channel} is out of range for a stream "
+            f"with {n_channels} channels (indices 0–{n_channels - 1})."
+        )
+
+
+def _build_real_stream(
+    args: argparse.Namespace,
+    channel_labels: dict[int, str],
+) -> tuple[QuattrocentoStream, StreamMeta]:
     if args.host is None or args.port is None:
         raise SystemExit("--host and --port are required for --source=real")
     if args.sample_rate is None or args.sample_rate == "auto":
@@ -161,10 +168,9 @@ def _build_real_stream(args: argparse.Namespace) -> tuple[QuattrocentoConfig, Qu
         nch_code = smallest_nch_for_channel_count(args.n_channels)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
-    if args.force_channels is None or args.aux_in_channel is None:
-        raise SystemExit(
-            "--force-channels and --aux-in-channel are required for --source=real"
-        )
+
+    n_channels = NCH_BITS_TO_NUM_CHANNELS[nch_code]
+    _validate_channel_indices(channel_labels, args.trigger_channel, n_channels)
 
     if args.conf2_config is not None:
         try:
@@ -178,29 +184,33 @@ def _build_real_stream(args: argparse.Namespace) -> tuple[QuattrocentoConfig, Qu
 
     config = QuattrocentoConfig(
         sample_rate_hz=args.sample_rate,
+        n_channels=n_channels,
         window_seconds=args.window_seconds,
         window_offset_seconds=args.window_offset_seconds,
         trigger_threshold=args.trigger_threshold,
+        trigger_channel=args.trigger_channel,
     )
     stream = QuattrocentoStream(
         config,
         handshake_kind="real",
         host=args.host,
         port=args.port,
-        n_channels=NCH_BITS_TO_NUM_CHANNELS[nch_code],
-        force_channel_indices=tuple(args.force_channels),
-        aux_in_channel_index=args.aux_in_channel,
         nch=nch_code,
         decimation_enabled=args.decimation_enabled,
         rec_on=args.rec_on,
         input_conf2_bytes=input_conf2_bytes,
     )
-    return config, stream
+    meta = StreamMeta(
+        channel_labels=channel_labels,
+        config=config,
+    )
+    return stream, meta
 
 
 def _build_rebroadcast_stream(
     args: argparse.Namespace,
-) -> tuple[QuattrocentoConfig, QuattrocentoStream]:
+    channel_labels: dict[int, str],
+) -> tuple[QuattrocentoStream, StreamMeta]:
     if args.host is None or args.port is None:
         raise SystemExit("--host and --port are required for --source=rebroadcast")
 
@@ -227,38 +237,37 @@ def _build_rebroadcast_stream(
         n_channels = known_nch
         sampling_rate_hz = known_rate
 
+    _validate_channel_indices(channel_labels, args.trigger_channel, n_channels)
+
     config = QuattrocentoConfig(
         sample_rate_hz=sampling_rate_hz,
+        n_channels=n_channels,
         window_seconds=args.window_seconds,
         window_offset_seconds=args.window_offset_seconds,
         trigger_threshold=args.trigger_threshold,
+        trigger_channel=args.trigger_channel,
     )
-
-    force_channels = args.force_channels
-    if force_channels is None:
-        force_channels = tuple(range(config.sensor_count))
-        logger.info("--force-channels not set; defaulting to channels %s", list(force_channels))
-
-    aux_in_channel = args.aux_in_channel
-    if aux_in_channel is None:
-        aux_in_channel = n_channels - 1
-        logger.info("--aux-in-channel not set; defaulting to channel %d (last)", aux_in_channel)
-
     stream = QuattrocentoStream(
         config=config,
         handshake_kind="rebroadcast",
         host=args.host,
         port=args.port,
-        n_channels=n_channels,
-        force_channel_indices=tuple(force_channels),
-        aux_in_channel_index=aux_in_channel,
     )
-    return config, stream
+    meta = StreamMeta(
+        channel_labels=channel_labels,
+        config=config,
+    )
+    return stream, meta
 
 
 def main(argv: list[str] | None = None) -> int:
     """Create and run the GUI application event loop."""
     args = parse_args(argv)
+
+    try:
+        channel_labels = load_channels(args.channels)
+    except (OSError, ValueError) as exc:
+        raise SystemExit(f"Failed to load channels file {args.channels!r}: {exc}") from exc
 
     qt_app = QtWidgets.QApplication.instance()
     if qt_app is None:
@@ -270,15 +279,18 @@ def main(argv: list[str] | None = None) -> int:
         qt_app = QtWidgets.QApplication(sys.argv)
 
     if args.source == "real":
-        config, stream = _build_real_stream(args)
+        stream, meta = _build_real_stream(args, channel_labels)
     else:
-        config, stream = _build_rebroadcast_stream(args)
+        stream, meta = _build_rebroadcast_stream(args, channel_labels)
 
-    processor = TriggerWindowProcessor(config)
-    window = QuattrocentoMainWindow(config.finger_labels)
+    processor = TriggerWindowProcessor(stream.config)
+    window = QuattrocentoMainWindow(
+        channel_labels=channel_labels,
+        trigger_channel=stream.config.trigger_channel,
+    )
     event_hooks = [CaptureLogger(args.log_dir)] if args.log_dir else []
     controller = QuattrocentoController(
-        config, stream, processor, window,
+        stream.config, stream, processor, window, meta,
         stream_hooks=[PassedTenPercentRightIndex()],
         event_hooks=event_hooks,
     )

@@ -8,58 +8,20 @@ from quattrocento.device import QuattrocentoStream
 
 
 class RebroadcastStreamConstructionTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.config = QuattrocentoConfig(sample_rate_hz=2048)
-
-    def test_rejects_force_channels_count_mismatch(self) -> None:
+    def test_rejects_nonpositive_n_channels(self) -> None:
         with self.assertRaises(ValueError):
-            QuattrocentoStream(
-                config=self.config,
-                handshake_kind="rebroadcast",
-                host="127.0.0.1",
-                port=31000,
-                n_channels=64,
-                force_channel_indices=(0, 1, 2),
-                aux_in_channel_index=10,
-            )
-
-    def test_rejects_out_of_range_force_channel(self) -> None:
-        with self.assertRaises(ValueError):
-            QuattrocentoStream(
-                config=self.config,
-                handshake_kind="rebroadcast",
-                host="127.0.0.1",
-                port=31000,
-                n_channels=10,
-                force_channel_indices=tuple(range(10)),
-                aux_in_channel_index=10,
-            )
-
-    def test_rejects_duplicate_force_channels(self) -> None:
-        with self.assertRaises(ValueError):
-            QuattrocentoStream(
-                config=self.config,
-                handshake_kind="rebroadcast",
-                host="127.0.0.1",
-                port=31000,
-                n_channels=64,
-                force_channel_indices=(0, 0, 1, 2, 3, 4, 5, 6, 7, 8),
-                aux_in_channel_index=10,
-            )
+            QuattrocentoConfig(sample_rate_hz=2048, n_channels=0)
 
 
 class RebroadcastStreamReadTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.config = QuattrocentoConfig(sample_rate_hz=2048)
         self.n_channels = 64
+        self.config = QuattrocentoConfig(sample_rate_hz=2048, n_channels=self.n_channels)
         self.stream = QuattrocentoStream(
             config=self.config,
             handshake_kind="rebroadcast",
             host="127.0.0.1",
             port=31000,
-            n_channels=self.n_channels,
-            force_channel_indices=tuple(range(10)),
-            aux_in_channel_index=10,
         )
 
     @patch("socket.socket")
@@ -89,10 +51,10 @@ class RebroadcastStreamReadTests(unittest.TestCase):
 
         batch = self.stream.read_batch()
 
-        self.assertEqual(batch.forces.shape, (sample_count, 10))
-        np.testing.assert_array_equal(batch.forces[:, 0], -100)
+        self.assertEqual(batch.signals.shape, (sample_count, self.n_channels))
+        np.testing.assert_array_equal(batch.signals[:, 0], -100.0)
         np.testing.assert_array_equal(
-            batch.aux_in,
+            batch.signals[:, 10],
             frame_values[:, 10].astype(np.float64),
         )
 
