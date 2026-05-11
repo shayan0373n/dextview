@@ -1,0 +1,20 @@
+# Default 10-finger channel layout for the Quattrocento simulator.
+# Simulator wire format: channels 0-9 are force signals, channel 10 is trigger.
+#
+# Usage:
+#   python -m quattrocento.simulator
+#   python -m quattrocento --source=rebroadcast --host=127.0.0.1 --port=31000 \
+#       --channels=examples/channels_default.toml --log-dir=./capture_logs
+
+[labels]
+"L Thumb"  = 0
+"L Index"  = 1
+"L Middle" = 2
+"L Ring"   = 3
+"L Little" = 4
+"R Thumb"  = 5
+"R Index"  = 6
+"R Middle" = 7
+"R Ring"   = 8
+"R Little" = 9
+"trigger"  = 10
