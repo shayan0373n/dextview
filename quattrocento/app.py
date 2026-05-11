@@ -62,7 +62,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         metavar="FILE",
         help=(
             "TOML file defining channel labels and optionally trigger_channel. "
-            "See examples/channels_default.toml for format."
+            "See quattrocento/channels_default.toml for format."
         ),
     )
     common.add_argument(

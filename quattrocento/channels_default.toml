@@ -4,7 +4,7 @@
 # Usage:
 #   python -m quattrocento.simulator
 #   python -m quattrocento --source=rebroadcast --host=127.0.0.1 --port=31000 \
-#       --channels=examples/channels_default.toml --log-dir=./capture_logs
+#       --channels=quattrocento/channels_default.toml --log-dir=./capture_logs
 
 [labels]
 "L Thumb"  = 0
