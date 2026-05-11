@@ -56,6 +56,15 @@ class CapturedWindow:
     trigger_sample: int
 
 
+class Stream(Protocol):
+    """Structural interface satisfied by all stream types."""
+
+    @property
+    def config(self) -> QuattrocentoConfig: ...
+    def read_batch(self) -> DataBatch: ...
+    def close(self) -> None: ...
+
+
 class _Hook(Protocol):
     """Shared interface for all hooks registered with the controller."""
 

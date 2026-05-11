@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Sequence
 
 SUPPORTED_SAMPLE_RATES = (512, 2048, 5120, 10240)
@@ -7,7 +8,7 @@ NCH_BITS_TO_NUM_CHANNELS = {0: 120, 1: 216, 2: 312, 3: 408}
 
 _FSAMP_BITS = {512: 0, 2048: 8, 5120: 16, 10240: 24}
 _NCH_TO_BITS = {0: 0, 1: 2, 2: 4, 3: 6}
-_COMMAND_LENGTH = 40
+COMMAND_LENGTH = 40
 
 INPUT_BLOCK_NAMES = (
     "IN1",
@@ -104,7 +105,7 @@ def build_start_command(
     input_conf2_bytes: tuple[int, ...],
 ) -> bytes:
     """Encode a 40-byte Quattrocento start-acquisition command frame."""
-    command = [0] * _COMMAND_LENGTH
+    command = [0] * COMMAND_LENGTH
 
     acq_sett = (
         0b10000000
@@ -118,19 +119,70 @@ def build_start_command(
     command[1] = 9
     command[2] = 0
 
-    for input_idx, base in enumerate(range(3, _COMMAND_LENGTH - 1, 3)):
+    for input_idx, base in enumerate(range(3, COMMAND_LENGTH - 1, 3)):
         command[base] = 0
         command[base + 1] = 0
         command[base + 2] = input_conf2_bytes[input_idx]
 
-    command[-1] = _crc8(command, _COMMAND_LENGTH - 1)
+    command[-1] = _crc8(command, COMMAND_LENGTH - 1)
     return bytes(command)
+
+
+@dataclass(frozen=True, slots=True)
+class StartCommand:
+    """Decoded fields from a 40-byte Quattrocento start-acquisition frame."""
+
+    fsamp_hz: int
+    nch_code: int
+    decimation_enabled: bool
+    rec_on: bool
+    input_conf2_bytes: tuple[int, ...]
+
+
+_FSAMP_BITS_REV: dict[int, int] = {v: k for k, v in _FSAMP_BITS.items()}
+_NCH_BITS_REV: dict[int, int] = {v: k for k, v in _NCH_TO_BITS.items()}
+
+
+def parse_start_command(frame: bytes) -> StartCommand:
+    """Decode a 40-byte Quattrocento start-acquisition frame.
+
+    Raises ValueError if the frame length is wrong or the CRC does not match.
+    """
+    if len(frame) != COMMAND_LENGTH:
+        raise ValueError(f"Expected {COMMAND_LENGTH} bytes, got {len(frame)}")
+    expected_crc = _crc8(frame, COMMAND_LENGTH - 1)
+    if frame[-1] != expected_crc:
+        raise ValueError(
+            f"CRC mismatch: expected {expected_crc:#04x}, got {frame[-1]:#04x}"
+        )
+
+    byte0 = frame[0]
+    decimation_enabled = bool(byte0 & 0b01000000)
+    rec_on = bool(byte0 & 0b00100000)
+    fsamp_raw = byte0 & 0b00011000
+    nch_raw = byte0 & 0b00000110
+
+    if fsamp_raw not in _FSAMP_BITS_REV:
+        raise ValueError(f"Unknown fsamp bits: {fsamp_raw:#010b}")
+    if nch_raw not in _NCH_BITS_REV:
+        raise ValueError(f"Unknown nch bits: {nch_raw:#010b}")
+
+    input_conf2_bytes = tuple(
+        frame[base + 2] for base in range(3, COMMAND_LENGTH - 1, 3)
+    )
+    return StartCommand(
+        fsamp_hz=_FSAMP_BITS_REV[fsamp_raw],
+        nch_code=_NCH_BITS_REV[nch_raw],
+        decimation_enabled=decimation_enabled,
+        rec_on=rec_on,
+        input_conf2_bytes=input_conf2_bytes,
+    )
 
 
 def build_stop_command() -> bytes:
     """Encode a 40-byte Quattrocento stop-acquisition command frame."""
-    command = [0] * _COMMAND_LENGTH
+    command = [0] * COMMAND_LENGTH
     command[0] = 0b10000000
-    command[-1] = _crc8(command, _COMMAND_LENGTH - 1)
+    command[-1] = _crc8(command, COMMAND_LENGTH - 1)
     return bytes(command)
 

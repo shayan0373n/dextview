@@ -13,7 +13,6 @@ from .channels import load_channels
 from .hooks import PassedTenPercentRightIndex
 from .config import QuattrocentoConfig
 from .controller import QuattrocentoController
-from .device import QuattrocentoStream
 from .models import StreamMeta
 from .processing import TriggerWindowProcessor
 from .protocol import (
@@ -24,6 +23,7 @@ from .protocol import (
 )
 from .rebroadcast_detect import detect_stream_params
 from .settings import load_input_conf2_bytes
+from .stream import DirectStream, ProxyStream, RebroadcastStream
 from .ui import QuattrocentoMainWindow
 
 
@@ -46,12 +46,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     common = parser.add_argument_group("common settings")
     common.add_argument(
         "--source",
-        choices=("real", "rebroadcast"),
+        choices=("real", "rebroadcast", "proxy"),
         required=True,
         help=(
-            "Data source type. 'real' connects directly to a Quattrocento "
-            "device; 'rebroadcast' connects to OT BioLab+ (or the bundled "
-            "simulator: python -m quattrocento.simulator)."
+            "Data source type. 'real': connects directly to a Quattrocento device. "
+            "'rebroadcast': connects to a rebroadcast server (e.g. OT BioLab+ or "
+            "the bundled simulator). "
+            "'proxy': listens for an upstream client, forwards its commands to the "
+            "device, and taps the data stream locally."
         ),
     )
     common.add_argument(
@@ -99,7 +101,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=None,
         help=(
             f"Sample rate (Hz). One of {SUPPORTED_SAMPLE_RATES}. "
-            "Rebroadcast also accepts 'auto' (default 'auto')."
+            "Rebroadcast also accepts 'auto' (default 'auto'). "
+            "Not used for proxy (sniffed from the wire)."
         ),
     )
     common.add_argument("--host", type=str, default=None, help="Device/server host.")
@@ -107,7 +110,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     common.add_argument(
         "--n-channels", dest="n_channels", type=_parse_auto_or_int, default=None,
         help=(
-            "Number of channels. Real source: integer. Rebroadcast: integer or 'auto'."
+            "Number of channels. Real source: integer. Rebroadcast: integer or 'auto'. "
+            "Not used for proxy (sniffed from the wire)."
         ),
     )
     common.add_argument(
@@ -129,6 +133,22 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     real.add_argument(
         "--conf2-config", type=str, default=None,
         help="Optional TOML file with conf2 input-block settings (real source only).",
+    )
+
+    proxy = parser.add_argument_group("proxy source")
+    proxy.add_argument(
+        "--proxy-listen-host",
+        type=str,
+        default="127.0.0.1",
+        dest="proxy_listen_host",
+        help="Host to bind the proxy listener on (default: 127.0.0.1).",
+    )
+    proxy.add_argument(
+        "--proxy-listen-port",
+        type=int,
+        default=23457,
+        dest="proxy_listen_port",
+        help="Port to bind the proxy listener on (default: 23457).",
     )
 
     return parser.parse_args(argv)
@@ -155,7 +175,7 @@ def _validate_channel_indices(
 def _build_real_stream(
     args: argparse.Namespace,
     channel_labels: dict[int, str],
-) -> tuple[QuattrocentoStream, StreamMeta]:
+) -> tuple[DirectStream, StreamMeta]:
     if args.host is None or args.port is None:
         raise SystemExit("--host and --port are required for --source=real")
     if args.sample_rate is None or args.sample_rate == "auto":
@@ -190,9 +210,8 @@ def _build_real_stream(
         trigger_threshold=args.trigger_threshold,
         trigger_channel=args.trigger_channel,
     )
-    stream = QuattrocentoStream(
+    stream = DirectStream(
         config,
-        handshake_kind="real",
         host=args.host,
         port=args.port,
         nch=nch_code,
@@ -200,17 +219,14 @@ def _build_real_stream(
         rec_on=args.rec_on,
         input_conf2_bytes=input_conf2_bytes,
     )
-    meta = StreamMeta(
-        channel_labels=channel_labels,
-        config=config,
-    )
+    meta = StreamMeta(channel_labels=channel_labels, config=config)
     return stream, meta
 
 
 def _build_rebroadcast_stream(
     args: argparse.Namespace,
     channel_labels: dict[int, str],
-) -> tuple[QuattrocentoStream, StreamMeta]:
+) -> tuple[RebroadcastStream, StreamMeta]:
     if args.host is None or args.port is None:
         raise SystemExit("--host and --port are required for --source=rebroadcast")
 
@@ -247,16 +263,39 @@ def _build_rebroadcast_stream(
         trigger_threshold=args.trigger_threshold,
         trigger_channel=args.trigger_channel,
     )
-    stream = QuattrocentoStream(
-        config=config,
-        handshake_kind="rebroadcast",
-        host=args.host,
-        port=args.port,
-    )
-    meta = StreamMeta(
-        channel_labels=channel_labels,
-        config=config,
-    )
+    stream = RebroadcastStream(config=config, host=args.host, port=args.port)
+    meta = StreamMeta(channel_labels=channel_labels, config=config)
+    return stream, meta
+
+
+def _build_proxy_stream(
+    args: argparse.Namespace,
+    channel_labels: dict[int, str],
+) -> tuple[ProxyStream, StreamMeta]:
+    if args.host is None or args.port is None:
+        raise SystemExit("--host and --port are required for --source=proxy (the device)")
+
+    try:
+        stream = ProxyStream.listen_and_accept(
+            listen_host=args.proxy_listen_host,
+            listen_port=args.proxy_listen_port,
+            device_host=args.host,
+            device_port=args.port,
+            window_seconds=args.window_seconds,
+            window_offset_seconds=args.window_offset_seconds,
+            trigger_threshold=args.trigger_threshold,
+            trigger_channel=args.trigger_channel,
+        )
+    except (ConnectionError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+
+    try:
+        _validate_channel_indices(channel_labels, args.trigger_channel, stream.config.n_channels)
+    except SystemExit:
+        stream.close()
+        raise
+
+    meta = StreamMeta(channel_labels=channel_labels, config=stream.config)
     return stream, meta
 
 
@@ -280,8 +319,10 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.source == "real":
         stream, meta = _build_real_stream(args, channel_labels)
-    else:
+    elif args.source == "rebroadcast":
         stream, meta = _build_rebroadcast_stream(args, channel_labels)
+    else:
+        stream, meta = _build_proxy_stream(args, channel_labels)
 
     processor = TriggerWindowProcessor(stream.config)
     window = QuattrocentoMainWindow(

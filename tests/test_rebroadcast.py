@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 import numpy as np
 
 from quattrocento.config import QuattrocentoConfig
-from quattrocento.device import QuattrocentoStream
+from quattrocento.stream.rebroadcast import RebroadcastStream
 
 
 class RebroadcastStreamConstructionTests(unittest.TestCase):
@@ -17,9 +17,8 @@ class RebroadcastStreamReadTests(unittest.TestCase):
     def setUp(self) -> None:
         self.n_channels = 64
         self.config = QuattrocentoConfig(sample_rate_hz=2048, n_channels=self.n_channels)
-        self.stream = QuattrocentoStream(
+        self.stream = RebroadcastStream(
             config=self.config,
-            handshake_kind="rebroadcast",
             host="127.0.0.1",
             port=31000,
         )

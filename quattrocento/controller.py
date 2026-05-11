@@ -9,8 +9,7 @@ from numpy.typing import NDArray
 from PyQt5 import QtCore
 
 from .config import QuattrocentoConfig
-from .device import QuattrocentoStream
-from .models import CapturedWindow, DataBatch, EventHook, StreamHook, StreamMeta
+from .models import CapturedWindow, DataBatch, EventHook, Stream, StreamHook, StreamMeta
 from .processing import TriggerWindowProcessor
 from .ui import QuattrocentoMainWindow
 
@@ -23,7 +22,7 @@ class QuattrocentoController(QtCore.QObject):
     def __init__(
         self,
         config: QuattrocentoConfig,
-        stream: QuattrocentoStream,
+        stream: Stream,
         processor: TriggerWindowProcessor,
         window: QuattrocentoMainWindow,
         meta: StreamMeta,

@@ -13,7 +13,7 @@ The application is structured logically from top to bottom:
 - **UI (`ui.py`)**: The presentation layer. PyQt5 user interface, real-time charting, and user controls.
 - **Controller (`controller.py`)**: The middleman orchestrator. Coordinates the data stream, processing logic, and UI updates using Qt signals.
 - **Processing (`processing.py`)**: The domain logic. Handles continuous data buffering, trigger edge detection, and extracting fixed-length capture windows.
-- **Device (`device.py`, `protocol.py`)**: The data access layer. Manages the socket connection to the physical Quattrocento device (binary protocol) or the OT BioLab+ rebroadcast server (text + binary protocol).
+- **Stream (`stream/`, `protocol.py`)**: The data access layer. Three concrete stream types: `DirectStream` (direct device connection), `RebroadcastStream` (OT BioLab+ / simulator), and `ProxyStream` (intercepts an upstream controller's session and taps the data locally).
 - **Simulator (`simulator.py`)**: A standalone TCP server that mimics the BioLab+ rebroadcast stream for local development and demos.
 - **Rebroadcast Detection (`rebroadcast_detect.py`)**: Automatic discovery of channel counts and sampling rates from rebroadcast streams.
 - **Config (`config.py`, `settings.py`)**: Shared configuration data structures and TOML file loading used across all layers.
@@ -25,6 +25,8 @@ Run the application with:
 `python run_quattrocento.py --source real` (direct connection)
 OR
 `python run_quattrocento.py --source rebroadcast` (OT BioLab+ or simulator)
+OR
+`python run_quattrocento.py --source proxy` (intercept upstream controller; sniffs stream params from the wire)
 
 ### Local Development with Simulator
 
