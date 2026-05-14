@@ -40,6 +40,10 @@ class TriggerWindowProcessor:
         self._noise_scale = 4.0
         self._trigger_dc: float | None = None
         self._trigger_noise = 0.0
+        # Suppress edge detection for 4 s (2τ) while the DC EMA settles to ~86% of
+        # its steady-state value. Prevents false triggers from startup transients.
+        self._warmup_samples = int(self._sample_rate_hz * baseline_tau_seconds * 2)
+        self._samples_seen = 0
 
         self._capturing = False
         self._previous_trigger_high = False
@@ -67,12 +71,29 @@ class TriggerWindowProcessor:
     def is_trigger_high(self) -> bool:
         return self._previous_trigger_high
 
+    @property
+    def trigger_dc(self) -> float | None:
+        return self._trigger_dc
+
+    @property
+    def trigger_noise(self) -> float:
+        return self._trigger_noise
+
+    @property
+    def effective_threshold(self) -> float:
+        return max(self._trigger_threshold, self._noise_scale * self._trigger_noise)
+
+    @property
+    def warmup_remaining_samples(self) -> int:
+        return max(0, self._warmup_samples - self._samples_seen)
+
     def reset(self) -> None:
         """Clear internal state and drop partially collected data."""
         self._capturing = False
         self._previous_trigger_high = False
         self._trigger_dc = None
         self._trigger_noise = 0.0
+        self._samples_seen = 0
         self._write_pos = 0
         self._ring_pos = 0
         self._ring_filled = 0
@@ -93,6 +114,7 @@ class TriggerWindowProcessor:
 
         trigger_col = batch.signals[:, self._trigger_channel]
         self._advance_trigger_dc(trigger_col)
+        self._samples_seen += batch_size
 
         cursor = 0
         while cursor < batch_size:
@@ -235,7 +257,7 @@ class TriggerWindowProcessor:
     def _find_rising_edges(
         self, trigger_col: NDArray[np.float64], prev_high: bool
     ) -> tuple[NDArray[np.intp], bool]:
-        if self._trigger_dc is None:
+        if self._trigger_dc is None or self._samples_seen < self._warmup_samples:
             return np.array([], dtype=np.intp), prev_high
         threshold = max(
             self._trigger_threshold, self._noise_scale * self._trigger_noise
@@ -244,7 +266,17 @@ class TriggerWindowProcessor:
         rising_edges = trigger_high & ~np.concatenate(
             ([prev_high], trigger_high[:-1])
         )
-        return np.flatnonzero(rising_edges), bool(trigger_high[-1])
+        edge_indices = np.flatnonzero(rising_edges)
+        if edge_indices.size > 0:
+            i = int(edge_indices[0])
+            logger.debug(
+                "trigger edge: signal=%.1f dc=%.1f threshold=%.1f samples_seen=%d",
+                float(trigger_col[i]),
+                self._trigger_dc,
+                threshold,
+                self._samples_seen,
+            )
+        return edge_indices, bool(trigger_high[-1])
 
     def _complete_capture(self, meta: StreamMeta) -> CapturedWindow:
         timestamps = self._time_buffer[: self._write_pos].copy()
