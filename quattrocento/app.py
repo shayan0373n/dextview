@@ -93,7 +93,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--trigger-threshold",
         type=float,
         default=0.5,
-        help="Trigger detection threshold.",
+        help=(
+            "Trigger detection threshold in physical units (post-normalization). "
+            "Signal range is [-scale, +scale] per channel's scale factor in the "
+            "TOML (default 1.0). With trigger scale=5.0, threshold=0.5 fires at "
+            "10%% of full scale. Default: %(default)s."
+        ),
     )
     common.add_argument(
         "--sample-rate",
@@ -121,6 +126,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "<log-dir>/session_<timestamp>/event_NNNNN.json."
         ),
     )
+    common.add_argument(
+        "--log-level",
+        default="WARNING",
+        choices=("DEBUG", "INFO", "WARNING", "ERROR"),
+        help="Console log verbosity (default: WARNING).",
+    )
 
     real = parser.add_argument_group("real source")
     real.add_argument(
@@ -146,9 +157,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     proxy.add_argument(
         "--proxy-listen-port",
         type=int,
-        default=23457,
+        default=23456,
         dest="proxy_listen_port",
-        help="Port to bind the proxy listener on (default: 23457).",
+        help="Port to bind the proxy listener on (default: 23456).",
     )
 
     return parser.parse_args(argv)
@@ -175,6 +186,7 @@ def _validate_channel_indices(
 def _build_real_stream(
     args: argparse.Namespace,
     channel_labels: dict[int, str],
+    channel_scales: dict[int, float],
 ) -> tuple[DirectStream, StreamMeta]:
     if args.host is None or args.port is None:
         raise SystemExit("--host and --port are required for --source=real")
@@ -209,6 +221,7 @@ def _build_real_stream(
         window_offset_seconds=args.window_offset_seconds,
         trigger_threshold=args.trigger_threshold,
         trigger_channel=args.trigger_channel,
+        channel_scales=channel_scales,
     )
     stream = DirectStream(
         config,
@@ -226,6 +239,7 @@ def _build_real_stream(
 def _build_rebroadcast_stream(
     args: argparse.Namespace,
     channel_labels: dict[int, str],
+    channel_scales: dict[int, float],
 ) -> tuple[RebroadcastStream, StreamMeta]:
     if args.host is None or args.port is None:
         raise SystemExit("--host and --port are required for --source=rebroadcast")
@@ -262,6 +276,7 @@ def _build_rebroadcast_stream(
         window_offset_seconds=args.window_offset_seconds,
         trigger_threshold=args.trigger_threshold,
         trigger_channel=args.trigger_channel,
+        channel_scales=channel_scales,
     )
     stream = RebroadcastStream(config=config, host=args.host, port=args.port)
     meta = StreamMeta(channel_labels=channel_labels, config=config)
@@ -271,6 +286,7 @@ def _build_rebroadcast_stream(
 def _build_proxy_stream(
     args: argparse.Namespace,
     channel_labels: dict[int, str],
+    channel_scales: dict[int, float],
 ) -> tuple[ProxyStream, StreamMeta]:
     if args.host is None or args.port is None:
         raise SystemExit("--host and --port are required for --source=proxy (the device)")
@@ -303,8 +319,13 @@ def main(argv: list[str] | None = None) -> int:
     """Create and run the GUI application event loop."""
     args = parse_args(argv)
 
+    logging.basicConfig(
+        level=getattr(logging, args.log_level),
+        format="%(asctime)s %(name)s %(levelname)s %(message)s",
+    )
+
     try:
-        channel_labels = load_channels(args.channels)
+        channel_labels, channel_scales = load_channels(args.channels)
     except (OSError, ValueError) as exc:
         raise SystemExit(f"Failed to load channels file {args.channels!r}: {exc}") from exc
 
@@ -318,16 +339,18 @@ def main(argv: list[str] | None = None) -> int:
         qt_app = QtWidgets.QApplication(sys.argv)
 
     if args.source == "real":
-        stream, meta = _build_real_stream(args, channel_labels)
+        stream, meta = _build_real_stream(args, channel_labels, channel_scales)
     elif args.source == "rebroadcast":
-        stream, meta = _build_rebroadcast_stream(args, channel_labels)
+        stream, meta = _build_rebroadcast_stream(args, channel_labels, channel_scales)
     else:
-        stream, meta = _build_proxy_stream(args, channel_labels)
+        stream, meta = _build_proxy_stream(args, channel_labels, channel_scales)
 
     processor = TriggerWindowProcessor(stream.config)
     window = QuattrocentoMainWindow(
         channel_labels=channel_labels,
         trigger_channel=stream.config.trigger_channel,
+        sample_rate_hz=stream.config.sample_rate_hz,
+        trigger_threshold=args.trigger_threshold,
     )
     event_hooks = [CaptureLogger(args.log_dir)] if args.log_dir else []
     controller = QuattrocentoController(
