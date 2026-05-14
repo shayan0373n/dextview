@@ -36,11 +36,24 @@ def _batch(
     return DataBatch(timestamps=timestamps, signals=full)
 
 
+def _feed_warmup(
+    proc: TriggerWindowProcessor,
+    meta: StreamMeta,
+    baseline: float = 0.0,
+) -> None:
+    """Advance proc past its warmup gate by feeding _warmup_samples flat-baseline samples."""
+    n = proc._warmup_samples
+    ts = np.arange(n, dtype=np.float64) / proc._sample_rate_hz
+    aux = np.full(n, baseline)
+    proc.process_batch(_batch(ts, np.zeros((n, N_CHANNELS - 1)), aux), meta)
+
+
 class TriggerWindowProcessorTests(unittest.TestCase):
     def test_capture_collects_next_window_after_rising_edge(self) -> None:
         config = QuattrocentoConfig(sample_rate_hz=4, n_channels=N_CHANNELS, window_seconds=1.0, trigger_channel=TRIGGER_CH)
         proc = _processor(config)
         meta = _meta(config)
+        _feed_warmup(proc, meta)
 
         force_rows = np.array(
             [[row * 100.0 + sensor for sensor in range(10)] for row in range(7)],
@@ -63,6 +76,7 @@ class TriggerWindowProcessorTests(unittest.TestCase):
         config = QuattrocentoConfig(sample_rate_hz=10, n_channels=N_CHANNELS, window_seconds=0.5, trigger_channel=TRIGGER_CH)
         proc = _processor(config)
         meta = _meta(config)
+        _feed_warmup(proc, meta)
 
         n = 20
         timestamps = np.arange(n, dtype=np.float64) / 10.0
@@ -84,6 +98,7 @@ class TriggerWindowProcessorTests(unittest.TestCase):
         config = QuattrocentoConfig(sample_rate_hz=4, n_channels=N_CHANNELS, window_seconds=1.0, trigger_channel=TRIGGER_CH)
         proc = _processor(config)
         meta = _meta(config)
+        _feed_warmup(proc, meta, baseline=8000.0)
 
         force_rows = np.array(
             [[row * 10.0 + sensor for sensor in range(10)] for row in range(8)],
@@ -111,6 +126,7 @@ class TriggerWindowProcessorTests(unittest.TestCase):
         config = QuattrocentoConfig(sample_rate_hz=4, n_channels=N_CHANNELS, window_seconds=1.0, trigger_channel=TRIGGER_CH)
         proc = _processor(config)
         meta = _meta(config)
+        _feed_warmup(proc, meta, baseline=5000.0)
 
         force_rows = np.array(
             [[row * 10.0 + sensor for sensor in range(10)] for row in range(12)],
@@ -135,6 +151,7 @@ class TriggerWindowProcessorTests(unittest.TestCase):
         config = QuattrocentoConfig(sample_rate_hz=4, n_channels=N_CHANNELS, window_seconds=1.0, trigger_channel=TRIGGER_CH)
         proc = _processor(config)
         meta = _meta(config)
+        _feed_warmup(proc, meta)
 
         timestamps = np.arange(8, dtype=np.float64) / config.sample_rate_hz
         force_rows = np.zeros((8, 10))
@@ -281,6 +298,11 @@ class WindowOffsetTests(unittest.TestCase):
     def test_edge_before_ring_full_emits_truncated_window(self) -> None:
         proc = self._make_processor()
         meta = self._make_meta()
+        # Advance past warmup, then clear the ring so the test scenario starts
+        # with a fresh ring (simulating a sub-session where the ring was just reset).
+        _feed_warmup(proc, meta)
+        proc._ring_filled = 0
+        proc._ring_pos = 0
         n = 2 + 16
         edge = 2
         ts, f = self._stream(n)
