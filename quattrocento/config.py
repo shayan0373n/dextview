@@ -15,6 +15,7 @@ class QuattrocentoConfig:
     trigger_threshold: float = 0.5
     trigger_channel: int = 0
     ui_refresh_ms: int = 30
+    channel_scales: dict[int, float] | None = None
 
     def __post_init__(self) -> None:
         if self.sample_rate_hz <= 0:

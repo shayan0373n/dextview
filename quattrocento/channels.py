@@ -4,15 +4,15 @@ from pathlib import Path
 import tomllib
 
 
-def load_channels(path: str | Path) -> dict[int, str]:
-    """Parse a TOML channels file and return a mapping of channel index → label.
+def load_channels(path: str | Path) -> tuple[dict[int, str], dict[int, float]]:
+    """Parse a TOML channels file and return a mapping of channel index → label and index → scale.
 
     TOML format::
 
         [labels]
-        "L Thumb"  = 0
-        "L Index"  = 1
-        "trigger"  = 10
+        "L Thumb"  = { index = 0, scale = 0.01667 }
+        "L Index"  = { index = 1, scale = 0.01667 }
+        "trigger"  = { index = 10, scale = 5.0 }
     """
     config_path = Path(path)
     with config_path.open("rb") as handle:
@@ -23,9 +23,19 @@ def load_channels(path: str | Path) -> dict[int, str]:
         raise ValueError("[labels] must be a TOML table")
 
     channel_labels: dict[int, str] = {}
-    for label, idx in raw_labels.items():
+    channel_scales: dict[int, float] = {}
+    for label, conf in raw_labels.items():
         if not isinstance(label, str):
             raise ValueError(f"Label key must be a string, got {label!r}")
+
+        if isinstance(conf, dict):
+            idx = conf.get("index")
+            if idx is None:
+                raise ValueError(f"Label {label!r}: missing 'index'")
+            scale = float(conf.get("scale", 1.0))
+        else:
+            raise ValueError(f"Label {label!r}: invalid config {conf!r}")
+
         if not isinstance(idx, int):
             raise ValueError(
                 f"Label {label!r}: index must be an integer, got {idx!r}"
@@ -38,5 +48,6 @@ def load_channels(path: str | Path) -> dict[int, str]:
                 f"Duplicate channel index {idx} (labels {existing!r} and {label!r})"
             )
         channel_labels[idx] = label
+        channel_scales[idx] = scale
 
-    return channel_labels
+    return channel_labels, channel_scales

@@ -6,6 +6,7 @@ from ..config import QuattrocentoConfig
 from ..models import DataBatch
 
 _MAX_BUFFER_BYTES = 50 * 1024 * 1024
+_INT16_FULL_SCALE = 32768.0
 
 
 class FrameParser:
@@ -20,6 +21,11 @@ class FrameParser:
         self._frame_bytes = 2 * config.n_channels
         self._byte_buffer = bytearray()
         self._sample_index = 0
+
+        self._scale_vector = np.ones(config.n_channels, dtype=np.float64)
+        if config.channel_scales:
+            for idx, scale in config.channel_scales.items():
+                self._scale_vector[idx] = scale
 
     def feed(self, raw: bytes) -> None:
         """Append bytes to the internal buffer; trim overflow if needed."""
@@ -48,6 +54,8 @@ class FrameParser:
             .reshape(sample_count, self._config.n_channels)
             .astype(np.float64)
         )
+        signals /= _INT16_FULL_SCALE
+        signals *= self._scale_vector
         sample_indices = np.arange(
             self._sample_index, self._sample_index + sample_count, dtype=np.int64
         )
