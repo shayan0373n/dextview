@@ -139,6 +139,15 @@ class QuattrocentoController(QtCore.QObject):
 
         captured_list = self._processor.process_batch(batch, self._meta)
 
+        self._window.push_trigger_batch(
+            timestamps=batch.timestamps,
+            trigger_col=batch.signals[:, self._config.trigger_channel],
+            dc=self._processor.trigger_dc,
+            noise=self._processor.trigger_noise,
+            effective_threshold=self._processor.effective_threshold,
+            warmup_remaining=self._processor.warmup_remaining_samples,
+        )
+
         if self._baseline_calibrating or self._peak_calibrating:
             if self._baseline_calibrating:
                 self._update_baseline(batch)
@@ -170,6 +179,7 @@ class QuattrocentoController(QtCore.QObject):
         for hook in self._event_hooks:
             hook(captured)
         self._window.set_last_trigger_now()
+        self._window.mark_trigger(float(captured.batch.timestamps[captured.trigger_sample]))
 
         if was_full and self._current_event_index is not None and not was_showing_latest:
             self._current_event_index = max(0, self._current_event_index - 1)

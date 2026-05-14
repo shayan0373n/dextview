@@ -242,6 +242,13 @@ class PassedTenPercentRightIndex:
         self._active = False
         self._meter: _ForceMeterDialog | None = None
 
+    def reset(self) -> None:
+        self._detector.reset()
+        if self._meter is not None:
+            self._meter.set_pct(0.0)
+            self._meter.set_status("Armed — waiting for onset")
+        logger.info("PassedTenPercentRightIndex RESET — detector streak cleared")
+
     def set_active(self, active: bool) -> None:
         self._detector.reset()
         if active:

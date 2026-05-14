@@ -12,6 +12,7 @@ from .models import CapturedWindow
 
 
 _RAW_GRID_COLUMNS = 5
+_MONITOR_ROLLING_SECONDS = 5.0
 _EXPECTED_FINGER_COUNT = 10
 
 # Peak-force bins used to color the per-finger max marker and the legend.
@@ -96,6 +97,149 @@ def _build_mirrored_bar_layout(
     return identity, tuple(finger_labels)
 
 
+class TriggerMonitorWindow(QtWidgets.QWidget):
+    """Rolling live view of the trigger channel with adaptive threshold overlay."""
+
+    def __init__(
+        self,
+        sample_rate_hz: int,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent, QtCore.Qt.Window)
+        self.setWindowTitle("Trigger Channel Monitor")
+        self.resize(860, 400)
+
+        self._sample_rate_hz = sample_rate_hz
+        self._max_samples = int(sample_rate_hz * _MONITOR_ROLLING_SECONDS)
+        self._times = np.empty(self._max_samples, dtype=np.float64)
+        self._values = np.empty(self._max_samples, dtype=np.float64)
+        self._write_pos = 0
+        self._filled = 0
+        self._trigger_lines: list[pg.InfiniteLine] = []
+
+        layout = QtWidgets.QVBoxLayout(self)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+
+        chips = QtWidgets.QHBoxLayout()
+        chips.setSpacing(8)
+        self._dc_label = QtWidgets.QLabel("DC: —")
+        self._noise_label = QtWidgets.QLabel("Noise RMS: —")
+        self._threshold_label = QtWidgets.QLabel("Threshold: ±—")
+        self._warmup_label = QtWidgets.QLabel("Warmup: —")
+        for lbl in (self._dc_label, self._noise_label, self._threshold_label, self._warmup_label):
+            lbl.setProperty("kind", "chip")
+            chips.addWidget(lbl)
+        chips.addStretch(1)
+        layout.addLayout(chips)
+
+        self._plot = pg.PlotWidget()
+        self._plot.setTitle(f"Trigger Channel — rolling {_MONITOR_ROLLING_SECONDS:.0f} s")
+        self._plot.setLabel("left", "Signal (a.u.)")
+        self._plot.setLabel("bottom", "Time (s)")
+        self._plot.setMenuEnabled(False)
+        self._plot.setMouseEnabled(x=False, y=True)
+        self._plot.showGrid(x=True, y=True, alpha=0.18)
+        layout.addWidget(self._plot)
+
+        self._curve = self._plot.plot([], [], pen=pg.mkPen("#0077B6", width=1.5))
+
+        pen_dc = pg.mkPen("#2A9D8F", width=1.5, style=QtCore.Qt.DashLine)
+        self._dc_line = pg.InfiniteLine(angle=0, pos=0, pen=pen_dc,
+                                        label="DC", labelOpts={"position": 0.05, "color": "#2A9D8F"})
+        self._plot.addItem(self._dc_line)
+
+        pen_thr = pg.mkPen("#E63946", width=1.5, style=QtCore.Qt.DashLine)
+        self._upper_line = pg.InfiniteLine(angle=0, pos=0, pen=pen_thr,
+                                           label="+thr", labelOpts={"position": 0.92, "color": "#E63946"})
+        self._lower_line = pg.InfiniteLine(angle=0, pos=0, pen=pen_thr,
+                                           label="−thr", labelOpts={"position": 0.92, "color": "#E63946"})
+        self._plot.addItem(self._upper_line)
+        self._plot.addItem(self._lower_line)
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        self.hide()
+        event.ignore()
+
+    def push_batch(
+        self,
+        timestamps: np.ndarray,
+        trigger_col: np.ndarray,
+        dc: float | None,
+        noise: float,
+        effective_threshold: float,
+        warmup_remaining: int,
+    ) -> None:
+        n = len(timestamps)
+        if n == 0:
+            return
+
+        end = self._write_pos + n
+        if end <= self._max_samples:
+            self._times[self._write_pos:end] = timestamps
+            self._values[self._write_pos:end] = trigger_col
+        else:
+            first = self._max_samples - self._write_pos
+            self._times[self._write_pos:] = timestamps[:first]
+            self._values[self._write_pos:] = trigger_col[:first]
+            rest = n - first
+            self._times[:rest] = timestamps[first:]
+            self._values[:rest] = trigger_col[first:]
+        self._write_pos = end % self._max_samples
+        self._filled = min(self._max_samples, self._filled + n)
+
+        if self._filled < self._max_samples:
+            t_out = self._times[:self._filled]
+            v_out = self._values[:self._filled]
+        else:
+            rp = self._write_pos
+            t_out = np.concatenate((self._times[rp:], self._times[:rp]))
+            v_out = np.concatenate((self._values[rp:], self._values[:rp]))
+
+        self._curve.setData(t_out, v_out)
+
+        if t_out.size > 0:
+            t_now = float(t_out[-1])
+            self._plot.setXRange(t_now - _MONITOR_ROLLING_SECONDS, t_now, padding=0.0)
+
+        dc_val = dc if dc is not None else 0.0
+        self._dc_line.setPos(dc_val)
+        self._upper_line.setPos(dc_val + effective_threshold)
+        self._lower_line.setPos(dc_val - effective_threshold)
+
+        if v_out.size > 0:
+            lo = min(float(np.min(v_out)), dc_val - effective_threshold)
+            hi = max(float(np.max(v_out)), dc_val + effective_threshold)
+            span = hi - lo if hi != lo else 2000.0
+            self._plot.setYRange(lo - span * 0.1, hi + span * 0.1, padding=0.0)
+
+        self._dc_label.setText(f"DC: {dc_val:.3f}" if dc is not None else "DC: —")
+        self._noise_label.setText(f"Noise RMS: {noise:.3f}")
+        self._threshold_label.setText(f"Threshold: ±{effective_threshold:.3f}")
+        if warmup_remaining > 0:
+            self._warmup_label.setText(f"Warmup: {warmup_remaining / self._sample_rate_hz:.1f} s left")
+        else:
+            self._warmup_label.setText("Warmup: done")
+
+        if t_out.size > 0:
+            cutoff = float(t_out[0])
+            keep = []
+            for line in self._trigger_lines:
+                if line.value() >= cutoff:
+                    keep.append(line)
+                else:
+                    self._plot.removeItem(line)
+            self._trigger_lines = keep
+
+    def mark_trigger(self, t: float) -> None:
+        line = pg.InfiniteLine(
+            pos=t, angle=90,
+            pen=pg.mkPen("#F6B73C", width=2),
+        )
+        self._plot.addItem(line)
+        self._trigger_lines.append(line)
+
+
 class QuattrocentoMainWindow(QtWidgets.QMainWindow):
     """Main visualization window for trigger-captured force events."""
 
@@ -108,6 +252,8 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self,
         channel_labels: Mapping[int, str],
         trigger_channel: int,
+        sample_rate_hz: int,
+        trigger_threshold: float,
     ) -> None:
         super().__init__()
 
@@ -151,8 +297,23 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._raw_plot_widgets: list[pg.PlotWidget] = []
         self._raw_curves: list[pg.PlotDataItem] = []
         self._raw_max_markers: list[pg.PlotDataItem] = []
+        self._mvc_ref_lines: list[pg.InfiniteLine] = []
         self._previous_shortcut: QtWidgets.QShortcut | None = None
         self._next_shortcut: QtWidgets.QShortcut | None = None
+        self._global_scale: bool = True
+        self._show_mvc: bool = True
+        self._last_capture: CapturedWindow | None = None
+        self._scale_button = QtWidgets.QPushButton("Global Scale")
+        self._scale_button.setObjectName("scaleButton")
+        self._scale_button.setCheckable(True)
+        self._display_mode_button = QtWidgets.QPushButton("% MVC")
+        self._display_mode_button.setObjectName("displayModeButton")
+        self._display_mode_button.setCheckable(True)
+        self._monitor_button = QtWidgets.QPushButton("Trigger Monitor")
+        self._trigger_monitor = TriggerMonitorWindow(
+            sample_rate_hz=sample_rate_hz,
+            parent=self,
+        )
 
         self._apply_palette()
         self._build_layout()
@@ -221,6 +382,16 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
                 border-color: #1E7268;
                 color: white;
             }
+            QPushButton#scaleButton:checked {
+                background: #5E60CE;
+                border-color: #4B4DBF;
+                color: white;
+            }
+            QPushButton#displayModeButton:checked {
+                background: #E07A10;
+                border-color: #B85E00;
+                color: white;
+            }
             """
         )
 
@@ -261,6 +432,9 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._next_button.clicked.connect(self.next_requested.emit)
         self._baseline_button.toggled.connect(self.baseline_toggled.emit)
         self._peak_button.toggled.connect(self.peak_toggled.emit)
+        self._scale_button.toggled.connect(self._on_scale_toggled)
+        self._display_mode_button.toggled.connect(self._on_display_mode_toggled)
+        self._monitor_button.clicked.connect(self._toggle_trigger_monitor)
         self._previous_button.setToolTip("Previous event (Left Arrow)")
         self._next_button.setToolTip("Next event (Right Arrow)")
         self._baseline_button.setToolTip("Toggle Rest (baseline) calibration")
@@ -272,8 +446,11 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         navigation_layout.addWidget(self._event_position_label)
         navigation_layout.addStretch(1)
         navigation_layout.addWidget(self._build_legend())
+        navigation_layout.addWidget(self._display_mode_button)
+        navigation_layout.addWidget(self._scale_button)
         navigation_layout.addWidget(self._baseline_button)
         navigation_layout.addWidget(self._peak_button)
+        navigation_layout.addWidget(self._monitor_button)
         navigation_layout.addLayout(self._hook_controls_layout)
         root_layout.addLayout(navigation_layout)
 
@@ -281,13 +458,15 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._style_range_plot()
         root_layout.addWidget(self.range_plot, stretch=2)
 
-        raw_grid_container = QtWidgets.QGroupBox("Raw Finger Force (Post Trigger)")
-        raw_grid_container.setFlat(True)
+        raw_grid_container = QtWidgets.QWidget()
+        raw_grid_container.setStyleSheet("background: #D2DDEA;")
         raw_grid_layout = QtWidgets.QGridLayout(raw_grid_container)
-        raw_grid_layout.setContentsMargins(2, 8, 2, 2)
-        raw_grid_layout.setHorizontalSpacing(6)
-        raw_grid_layout.setVerticalSpacing(6)
+        raw_grid_layout.setContentsMargins(2, 2, 2, 2)
+        raw_grid_layout.setHorizontalSpacing(2)
+        raw_grid_layout.setVerticalSpacing(2)
         self._build_raw_grid(raw_grid_layout)
+        raw_grid_layout.setRowStretch(0, 1)
+        raw_grid_layout.setRowStretch(1, 1)
         root_layout.addWidget(raw_grid_container, stretch=5)
 
     def _style_range_plot(self) -> None:
@@ -299,31 +478,57 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self.range_plot.getAxis("bottom").setTicks(
             [list(zip(self._bar_x.tolist(), self._bar_display_labels))]
         )
-        self.range_plot.getAxis("bottom").setTickFont(QtGui.QFont("Segoe UI", 8))
+        self.range_plot.getAxis("bottom").setTickFont(
+            QtGui.QFont("Segoe UI", 12, QtGui.QFont.Bold)
+        )
         self.range_plot.setYRange(0.0, 1.0, padding=0.0)
         self.range_plot.setXRange(-0.6, len(self._bar_display_labels) - 0.4, padding=0.0)
         self._draw_range_bars(np.zeros(len(self._bar_display_labels), dtype=np.float64))
 
     def _build_raw_grid(self, grid_layout: QtWidgets.QGridLayout) -> None:
+        n_rows = (_EXPECTED_FINGER_COUNT + _RAW_GRID_COLUMNS - 1) // _RAW_GRID_COLUMNS
+        last_row = n_rows - 1
+
         for finger_idx, finger_name in enumerate(self._finger_labels):
             row = finger_idx // _RAW_GRID_COLUMNS
             col = finger_idx % _RAW_GRID_COLUMNS
 
-            panel = pg.PlotWidget()
+            panel = pg.PlotWidget(background="#F4F7FB")
             panel.setMenuEnabled(False)
             panel.setMouseEnabled(x=False, y=False)
             panel.showGrid(x=True, y=True, alpha=0.18)
-            panel.setTitle(finger_name, size="9pt", color="#2E3A46")
+            panel.setFrameShape(QtWidgets.QFrame.NoFrame)
+            panel.setTitle(
+                f"<b>{finger_name}</b>", size="11pt", color="#2E3A46"
+            )
+            panel.plotItem.titleLabel.item.setTextWidth(-1)
 
-            if row == 1:
-                panel.setLabel("bottom", "Time", units="s")
+            # Bottom axis: tick values only on last row, hidden otherwise.
+            if row == last_row:
+                panel.getAxis("bottom").setHeight(18)
             else:
+                panel.getAxis("bottom").setHeight(0)
                 panel.getAxis("bottom").setStyle(showValues=False)
 
+            # Left axis: tick values only on first column.
             if col == 0:
-                panel.setLabel("left", "Force", units="a.u.")
+                panel.getAxis("left").setWidth(40)
             else:
+                panel.getAxis("left").setWidth(0)
                 panel.getAxis("left").setStyle(showValues=False)
+
+            trigger_line = pg.InfiniteLine(
+                pos=0.0, angle=90,
+                pen=pg.mkPen("#E63946", width=1.5, style=QtCore.Qt.DashLine),
+            )
+            panel.addItem(trigger_line)
+
+            # MVC reference line (peak = 100%), initially hidden.
+            pen_ref = pg.mkPen("#64748B", width=1.0, style=QtCore.Qt.DotLine)
+            peak_ref = pg.InfiniteLine(angle=0, pos=0, pen=pen_ref)
+            peak_ref.setVisible(False)
+            panel.addItem(peak_ref)
+            self._mvc_ref_lines.append(peak_ref)
 
             pen = pg.mkPen(FINGER_COLORS[finger_idx % len(FINGER_COLORS)], width=2.0)
             curve = panel.plot([], [], pen=pen)
@@ -344,7 +549,6 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         reference = self._raw_plot_widgets[0]
         for panel in self._raw_plot_widgets[1:]:
             panel.setXLink(reference)
-            panel.setYLink(reference)
 
     def _build_legend(self) -> QtWidgets.QWidget:
         legend_widget = QtWidgets.QWidget()
@@ -405,6 +609,31 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         )
         self._next_shortcut.setContext(Qt.WindowShortcut)
         self._next_shortcut.activated.connect(self.next_requested.emit)
+
+    def _toggle_trigger_monitor(self) -> None:
+        if self._trigger_monitor.isVisible():
+            self._trigger_monitor.hide()
+        else:
+            self._trigger_monitor.show()
+            self._trigger_monitor.raise_()
+
+    def push_trigger_batch(
+        self,
+        timestamps: np.ndarray,
+        trigger_col: np.ndarray,
+        dc: float | None,
+        noise: float,
+        effective_threshold: float,
+        warmup_remaining: int,
+    ) -> None:
+        if self._trigger_monitor.isVisible():
+            self._trigger_monitor.push_batch(
+                timestamps, trigger_col, dc, noise, effective_threshold, warmup_remaining
+            )
+
+    def mark_trigger(self, t: float) -> None:
+        if self._trigger_monitor.isVisible():
+            self._trigger_monitor.mark_trigger(t)
 
     def add_hook_controls(
         self,
@@ -484,9 +713,6 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
 
     def _apply_unit_labels(self, unit: str) -> None:
         self.range_plot.setLabel("left", "Range", units=unit)
-        for i, panel in enumerate(self._raw_plot_widgets):
-            if i % _RAW_GRID_COLUMNS == 0:
-                panel.setLabel("left", "Force", units=unit)
 
     def set_event_navigation(self, current_index: int | None, total_events: int) -> None:
         if total_events <= 0 or current_index is None:
@@ -501,15 +727,48 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._previous_button.setEnabled(current_index > 0)
         self._next_button.setEnabled(current_index < (total_events - 1))
 
+    def _on_display_mode_toggled(self, checked: bool) -> None:
+        self._show_mvc = not checked
+        self._display_mode_button.setText("Raw" if checked else "% MVC")
+        if self._last_capture is not None:
+            self.update_capture(self._last_capture)
+
+    def _on_scale_toggled(self, checked: bool) -> None:
+        self._global_scale = not checked
+        self._scale_button.setText("Per Finger Scale" if checked else "Global Scale")
+        self._set_per_finger_axes(per_finger=not self._global_scale)
+        if self._last_capture is not None:
+            self.update_capture(self._last_capture)
+
+    def _set_per_finger_axes(self, *, per_finger: bool) -> None:
+        """Show or hide Y-axis tick values on non-first-column panels."""
+        for i, panel in enumerate(self._raw_plot_widgets):
+            if i % _RAW_GRID_COLUMNS == 0:
+                continue
+            axis = panel.getAxis("left")
+            if per_finger:
+                axis.setWidth(40)
+                axis.setStyle(showValues=True)
+            else:
+                axis.setWidth(0)
+                axis.setStyle(showValues=False)
+
     def update_capture(self, captured: CapturedWindow) -> None:
         """Render one captured event in both plots."""
+        self._last_capture = captured
         sig = captured.batch.signals
-        if captured.meta.baseline is not None and captured.meta.peak is not None:
+        has_cal = captured.meta.baseline is not None and captured.meta.peak is not None
+
+        # % MVC mode: normalize signals; Raw mode: subtract baseline if calibrated.
+        if self._show_mvc and has_cal:
             span = captured.meta.peak - captured.meta.baseline
             safe_span = np.where(span != 0, span, 1.0)
             sig = (sig - captured.meta.baseline) / safe_span * 100.0
             unit = "% MVC"
         else:
+            has_baseline = captured.meta.baseline is not None
+            if has_baseline:
+                sig = sig - captured.meta.baseline
             unit = "a.u."
         self._apply_unit_labels(unit)
 
@@ -528,22 +787,40 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
                 max_idx = int(np.argmax(force_data))
                 peak_force = float(force_data[max_idx])
                 marker.setData([float(relative_time[max_idx])], [peak_force])
-                marker.setSymbolBrush(pg.mkBrush(_mvc_bin_color(peak_force)))
+                color = _mvc_bin_color(peak_force) if self._show_mvc else "#AAAAAA"
+                marker.setSymbolBrush(pg.mkBrush(color))
             else:
                 marker.setData([], [])
+
+            # MVC reference line: visible only in raw mode when full calibration exists.
+            peak_ref = self._mvc_ref_lines[local_idx]
+            show_ref = not self._show_mvc and has_cal
+            peak_ref.setVisible(show_ref)
+            if show_ref:
+                peak_ref.setPos(float(captured.meta.peak[ch_idx] - captured.meta.baseline[ch_idx]))
 
         finger_signals = sig[:, self._finger_channel_indices]
         if relative_time.size > 0 and self._raw_plot_widgets:
             x_min = float(relative_time[0])
             x_max = float(relative_time[-1])
-            y_min = float(np.min(finger_signals))
-            y_max = float(np.max(finger_signals))
-            y_span = y_max - y_min
-            y_padding = max(0.8, y_span * 0.08)
 
-            for panel in self._raw_plot_widgets:
-                panel.setXRange(x_min, x_max, padding=0.0)
-                panel.setYRange(y_min - y_padding, y_max + y_padding, padding=0.0)
+            if self._global_scale:
+                y_min = float(np.min(finger_signals))
+                y_max = float(np.max(finger_signals))
+                y_span = y_max - y_min
+                y_padding = max(0.8, y_span * 0.08)
+                for panel in self._raw_plot_widgets:
+                    panel.setXRange(x_min, x_max, padding=0.0)
+                    panel.setYRange(y_min - y_padding, y_max + y_padding, padding=0.0)
+            else:
+                for local_idx, panel in enumerate(self._raw_plot_widgets):
+                    finger_data = finger_signals[:, local_idx]
+                    f_min = float(np.min(finger_data))
+                    f_max = float(np.max(finger_data))
+                    f_span = f_max - f_min
+                    f_padding = max(0.8, f_span * 0.08)
+                    panel.setXRange(x_min, x_max, padding=0.0)
+                    panel.setYRange(f_min - f_padding, f_max + f_padding, padding=0.0)
         ordered_ranges = np.ptp(
             finger_signals[:, list(self._bar_display_indices)], axis=0
         )
