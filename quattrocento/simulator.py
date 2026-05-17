@@ -262,6 +262,7 @@ def main(argv: list[str] | None = None) -> int:
     server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server.bind((args.host, args.port))
     server.listen(1)
+    server.settimeout(1.0)  # lets KeyboardInterrupt be processed on Windows
     logger.info(
         f"listening on {args.host}:{args.port} "
         f"(n_channels={args.n_channels}, sample_rate={args.sample_rate} Hz)"
@@ -269,7 +270,10 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         while True:
-            client_sock, addr = server.accept()
+            try:
+                client_sock, addr = server.accept()
+            except socket.timeout:
+                continue
             logger.info(f"client connected from {addr}")
             try:
                 _serve_client(client_sock, args)

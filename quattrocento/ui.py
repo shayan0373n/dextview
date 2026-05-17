@@ -9,6 +9,7 @@ from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import Qt
 
 from .models import CapturedWindow
+from .processing import detect_onset
 
 
 _RAW_GRID_COLUMNS = 5
@@ -240,6 +241,252 @@ class TriggerMonitorWindow(QtWidgets.QWidget):
         self._trigger_lines.append(line)
 
 
+class EmgMonitorWindow(QtWidgets.QWidget):
+    """Per-event view of rectified EMG channels with P2P and onset overlays.
+
+    Receives the same CapturedWindow as the main finger view, but renders
+    only the channels declared `kind = "emg"` in the channels TOML, after
+    rectification. No baseline/MVC — values are |scaled signal|.
+    """
+
+    def __init__(
+        self,
+        emg_channels: Sequence[tuple[int, str]],
+        sample_rate_hz: int,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent, QtCore.Qt.Window)
+        self.setWindowTitle("EMG Monitor")
+        self.resize(1100, 360)
+
+        self._channel_indices: list[int] = [idx for idx, _ in emg_channels]
+        self._channel_labels: list[str] = [label for _, label in emg_channels]
+        self._sample_rate_hz = sample_rate_hz
+        self._global_scale: bool = True
+        self._post_skip_ms: float = 0.0
+        self._last_capture: CapturedWindow | None = None
+
+        self._plot_widgets: list[pg.PlotWidget] = []
+        self._curves: list[pg.PlotDataItem] = []
+        self._onset_lines: list[pg.InfiniteLine] = []
+        self._skip_regions: list[pg.LinearRegionItem] = []
+        self._info_labels: list[QtWidgets.QLabel] = []
+
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(8)
+
+        toolbar = QtWidgets.QHBoxLayout()
+        toolbar.setSpacing(8)
+        self._scale_button = QtWidgets.QPushButton("Global Scale")
+        self._scale_button.setObjectName("scaleButton")
+        self._scale_button.setCheckable(True)
+        self._scale_button.toggled.connect(self._on_scale_toggled)
+        toolbar.addWidget(self._scale_button)
+
+        skip_label = QtWidgets.QLabel("Skip after trigger (ms):")
+        skip_label.setStyleSheet("color: #334155; font-size: 12px; font-weight: 600;")
+        self._skip_spin = QtWidgets.QDoubleSpinBox()
+        self._skip_spin.setRange(0.0, 1000.0)
+        self._skip_spin.setDecimals(1)
+        self._skip_spin.setSingleStep(1.0)
+        self._skip_spin.setValue(self._post_skip_ms)
+        self._skip_spin.setSuffix(" ms")
+        self._skip_spin.setToolTip(
+            "Excludes the first N ms after the trigger from P2P and onset "
+            "(useful to ignore TMS or stimulator artifact)."
+        )
+        self._skip_spin.valueChanged.connect(self._on_skip_changed)
+        toolbar.addWidget(skip_label)
+        toolbar.addWidget(self._skip_spin)
+        toolbar.addStretch(1)
+        root.addLayout(toolbar)
+
+        grid_container = QtWidgets.QWidget()
+        grid_container.setStyleSheet("background: #D2DDEA;")
+        grid = QtWidgets.QGridLayout(grid_container)
+        grid.setContentsMargins(2, 2, 2, 2)
+        grid.setHorizontalSpacing(2)
+        grid.setVerticalSpacing(2)
+
+        for local_idx, label in enumerate(self._channel_labels):
+            panel = pg.PlotWidget(background="#F4F7FB")
+            panel.setMenuEnabled(False)
+            panel.setMouseEnabled(x=False, y=False)
+            panel.showGrid(x=True, y=True, alpha=0.18)
+            panel.setFrameShape(QtWidgets.QFrame.NoFrame)
+            panel.setTitle(f"<b>{label}</b>", size="16pt", color="#2E3A46")
+            panel.plotItem.titleLabel.item.setTextWidth(-1)
+            panel.getAxis("bottom").setHeight(32)
+            panel.getAxis("bottom").setTickFont(
+                QtGui.QFont("Segoe UI", 13, QtGui.QFont.Bold)
+            )
+            if local_idx == 0:
+                panel.getAxis("left").setWidth(48)
+            else:
+                panel.getAxis("left").setWidth(0)
+                panel.getAxis("left").setStyle(showValues=False)
+            panel.setLabel("left", "EMG", units="a.u.")
+            panel.setLabel("bottom", "Time (s)")
+
+            trigger_line = pg.InfiniteLine(
+                pos=0.0, angle=90,
+                pen=pg.mkPen("#E63946", width=1.5, style=QtCore.Qt.DashLine),
+            )
+            panel.addItem(trigger_line)
+
+            skip_region = pg.LinearRegionItem(
+                values=(0.0, 0.0),
+                movable=False,
+                brush=pg.mkBrush(230, 57, 70, 60),
+                pen=pg.mkPen(None),
+            )
+            skip_region.setZValue(-10)
+            skip_region.setVisible(False)
+            panel.addItem(skip_region)
+            self._skip_regions.append(skip_region)
+
+            pen = pg.mkPen(FINGER_COLORS[local_idx % len(FINGER_COLORS)], width=2.0)
+            curve = panel.plot([], [], pen=pen)
+
+            onset_line = pg.InfiniteLine(
+                pos=0.0, angle=90,
+                pen=pg.mkPen("#2A9D8F", width=2.0),
+            )
+            onset_line.setVisible(False)
+            panel.addItem(onset_line)
+
+            info_label = QtWidgets.QLabel("P2P: —\nOnset: —", panel)
+            info_label.setStyleSheet(
+                "font-weight: bold; font-size: 22px; color: #1E2933;"
+                " background: rgba(244,247,251,200); padding: 3px 6px; border-radius: 4px;"
+            )
+            info_label.adjustSize()
+            info_label.move(4, 36)
+            info_label.raise_()
+
+            self._plot_widgets.append(panel)
+            self._curves.append(curve)
+            self._onset_lines.append(onset_line)
+            self._info_labels.append(info_label)
+            grid.addWidget(panel, 0, local_idx)
+
+        if self._plot_widgets:
+            reference = self._plot_widgets[0]
+            for panel in self._plot_widgets[1:]:
+                panel.setXLink(reference)
+
+        root.addWidget(grid_container, stretch=1)
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        self.hide()
+        event.ignore()
+
+    def _on_scale_toggled(self, checked: bool) -> None:
+        self._global_scale = not checked
+        self._scale_button.setText("Per Channel Scale" if checked else "Global Scale")
+        if self._last_capture is not None:
+            self.update_capture(self._last_capture)
+
+    def _on_skip_changed(self, value: float) -> None:
+        self._post_skip_ms = float(value)
+        if self._last_capture is not None:
+            self.update_capture(self._last_capture)
+
+    def update_capture(self, captured: CapturedWindow) -> None:
+        self._last_capture = captured
+        if not self._plot_widgets:
+            return
+
+        sig = captured.batch.signals
+        relative_time = (
+            captured.batch.timestamps
+            - captured.batch.timestamps[captured.trigger_sample]
+        )
+
+        skip_samples = max(
+            0, int(round(self._post_skip_ms / 1000.0 * self._sample_rate_hz))
+        )
+        measure_start = captured.trigger_sample + skip_samples
+        skip_seconds = self._post_skip_ms / 1000.0
+        for region in self._skip_regions:
+            if skip_samples > 0:
+                region.setRegion((0.0, skip_seconds))
+                region.setVisible(True)
+            else:
+                region.setVisible(False)
+
+        emg_columns: list[np.ndarray] = []
+        for local_idx, curve in enumerate(self._curves):
+            ch_idx = self._channel_indices[local_idx]
+            emg = sig[:, ch_idx]
+            emg_columns.append(emg)
+            curve.setData(relative_time, emg)
+
+            onset_ms = detect_onset(
+                emg,
+                captured.trigger_sample,
+                self._sample_rate_hz,
+                post_skip_samples=skip_samples,
+            )
+            onset_line = self._onset_lines[local_idx]
+            if onset_ms is not None:
+                onset_line.setPos(onset_ms / 1000.0)
+                onset_line.setVisible(True)
+            else:
+                onset_line.setVisible(False)
+
+            measured = emg[measure_start:]
+            p2p = float(np.ptp(measured)) if measured.size > 0 else 0.0
+            p2p_str = f"P2P: {p2p:.2f}"
+            onset_str = (
+                f"Onset: {onset_ms:.0f} ms" if onset_ms is not None else "Onset: —"
+            )
+            lbl = self._info_labels[local_idx]
+            lbl.setText(f"{p2p_str}\n{onset_str}")
+            lbl.adjustSize()
+
+        if relative_time.size == 0:
+            return
+        x_min = float(relative_time[0])
+        x_max = float(relative_time[-1])
+
+        if self._global_scale:
+            stacked = np.stack(emg_columns, axis=1)
+            y_min = float(np.min(stacked))
+            y_max = float(np.max(stacked))
+            y_span = y_max - y_min
+            y_padding = max(0.01, y_span * 0.08)
+            for panel in self._plot_widgets:
+                panel.setXRange(x_min, x_max, padding=0.0)
+                panel.setYRange(y_min - y_padding, y_max + y_padding, padding=0.0)
+        else:
+            for local_idx, panel in enumerate(self._plot_widgets):
+                col = emg_columns[local_idx]
+                f_min = float(np.min(col))
+                f_max = float(np.max(col))
+                f_span = f_max - f_min
+                f_padding = max(0.01, f_span * 0.08)
+                panel.setXRange(x_min, x_max, padding=0.0)
+                panel.setYRange(f_min - f_padding, f_max + f_padding, padding=0.0)
+
+
+class _OnsetLine(pg.InfiniteLine):
+    """Movable vertical onset marker with a right-click 'Reset to auto' menu."""
+
+    reset_requested = QtCore.pyqtSignal()
+
+    def mouseClickEvent(self, ev) -> None:
+        if ev.button() == QtCore.Qt.RightButton:
+            menu = QtWidgets.QMenu()
+            action = menu.addAction("Reset to auto-detected")
+            if menu.exec_(QtGui.QCursor.pos()) == action:
+                self.reset_requested.emit()
+            ev.accept()
+        else:
+            super().mouseClickEvent(ev)
+
+
 class QuattrocentoMainWindow(QtWidgets.QMainWindow):
     """Main visualization window for trigger-captured force events."""
 
@@ -254,14 +501,17 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         trigger_channel: int,
         sample_rate_hz: int,
         trigger_threshold: float,
+        emg_channels: Sequence[tuple[int, str]] = (),
     ) -> None:
         super().__init__()
 
-        # Ordered non-trigger finger channels, sorted by channel index.
+        emg_indices: set[int] = {idx for idx, _ in emg_channels}
+
+        # Ordered non-trigger, non-EMG finger channels, sorted by channel index.
         finger_channels = sorted(
             (idx, label)
             for idx, label in channel_labels.items()
-            if idx != trigger_channel
+            if idx != trigger_channel and idx not in emg_indices
         )
         if len(finger_channels) != _EXPECTED_FINGER_COUNT:
             raise ValueError(
@@ -300,9 +550,14 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._mvc_ref_lines: list[pg.InfiniteLine] = []
         self._previous_shortcut: QtWidgets.QShortcut | None = None
         self._next_shortcut: QtWidgets.QShortcut | None = None
+        self._sample_rate_hz = sample_rate_hz
         self._global_scale: bool = True
         self._show_mvc: bool = True
         self._last_capture: CapturedWindow | None = None
+        self._finger_info_labels: list[QtWidgets.QLabel] = []
+        self._onset_lines: list[_OnsetLine] = []
+        self._auto_onset_ms: list[float | None] = [None] * _EXPECTED_FINGER_COUNT
+        self._finger_p2p_strs: list[str] = ["P2P: —"] * _EXPECTED_FINGER_COUNT
         self._scale_button = QtWidgets.QPushButton("Global Scale")
         self._scale_button.setObjectName("scaleButton")
         self._scale_button.setCheckable(True)
@@ -314,6 +569,17 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             sample_rate_hz=sample_rate_hz,
             parent=self,
         )
+        self._emg_button = QtWidgets.QPushButton("EMG Monitor")
+        self._emg_window: EmgMonitorWindow | None = (
+            EmgMonitorWindow(
+                emg_channels=emg_channels,
+                sample_rate_hz=sample_rate_hz,
+                parent=self,
+            )
+            if emg_channels
+            else None
+        )
+        self._emg_button.setEnabled(self._emg_window is not None)
 
         self._apply_palette()
         self._build_layout()
@@ -435,6 +701,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._scale_button.toggled.connect(self._on_scale_toggled)
         self._display_mode_button.toggled.connect(self._on_display_mode_toggled)
         self._monitor_button.clicked.connect(self._toggle_trigger_monitor)
+        self._emg_button.clicked.connect(self._toggle_emg_monitor)
         self._previous_button.setToolTip("Previous event (Left Arrow)")
         self._next_button.setToolTip("Next event (Right Arrow)")
         self._baseline_button.setToolTip("Toggle Rest (baseline) calibration")
@@ -451,6 +718,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         navigation_layout.addWidget(self._baseline_button)
         navigation_layout.addWidget(self._peak_button)
         navigation_layout.addWidget(self._monitor_button)
+        navigation_layout.addWidget(self._emg_button)
         navigation_layout.addLayout(self._hook_controls_layout)
         root_layout.addLayout(navigation_layout)
 
@@ -479,7 +747,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             [list(zip(self._bar_x.tolist(), self._bar_display_labels))]
         )
         self.range_plot.getAxis("bottom").setTickFont(
-            QtGui.QFont("Segoe UI", 12, QtGui.QFont.Bold)
+            QtGui.QFont("Segoe UI", 15, QtGui.QFont.Bold)
         )
         self.range_plot.setYRange(0.0, 1.0, padding=0.0)
         self.range_plot.setXRange(-0.6, len(self._bar_display_labels) - 0.4, padding=0.0)
@@ -499,13 +767,16 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             panel.showGrid(x=True, y=True, alpha=0.18)
             panel.setFrameShape(QtWidgets.QFrame.NoFrame)
             panel.setTitle(
-                f"<b>{finger_name}</b>", size="11pt", color="#2E3A46"
+                f"<b>{finger_name}</b>", size="16pt", color="#2E3A46"
             )
             panel.plotItem.titleLabel.item.setTextWidth(-1)
 
             # Bottom axis: tick values only on last row, hidden otherwise.
             if row == last_row:
-                panel.getAxis("bottom").setHeight(18)
+                panel.getAxis("bottom").setHeight(32)
+                panel.getAxis("bottom").setTickFont(
+                    QtGui.QFont("Segoe UI", 13, QtGui.QFont.Bold)
+                )
             else:
                 panel.getAxis("bottom").setHeight(0)
                 panel.getAxis("bottom").setStyle(showValues=False)
@@ -537,6 +808,30 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
                 [], [], pen=None, symbol="o", symbolSize=8,
                 symbolBrush="#E63946", symbolPen="w"
             )
+
+            onset_line = _OnsetLine(
+                pos=0.0, angle=90, movable=True,
+                pen=pg.mkPen("#2A9D8F", width=2.0),
+            )
+            onset_line.setVisible(False)
+            onset_line.sigPositionChangeFinished.connect(
+                lambda line, i=finger_idx: self._on_onset_dragged(i, line.value())
+            )
+            onset_line.reset_requested.connect(
+                lambda i=finger_idx: self._reset_onset(i)
+            )
+            panel.addItem(onset_line)
+            self._onset_lines.append(onset_line)
+
+            info_label = QtWidgets.QLabel("P2P: —\nOnset: —", panel)
+            info_label.setStyleSheet(
+                "font-weight: bold; font-size: 22px; color: #1E2933;"
+                " background: rgba(244,247,251,200); padding: 3px 6px; border-radius: 4px;"
+            )
+            info_label.adjustSize()
+            info_label.move(4, 36)
+            info_label.raise_()
+            self._finger_info_labels.append(info_label)
 
             self._raw_plot_widgets.append(panel)
             self._raw_curves.append(curve)
@@ -587,7 +882,6 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         if self._bar_item is not None:
             self._bar_item.setOpts(height=heights)
             return
-
         self._bar_item = pg.BarGraphItem(
             x=self._bar_x,
             height=heights,
@@ -616,6 +910,15 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         else:
             self._trigger_monitor.show()
             self._trigger_monitor.raise_()
+
+    def _toggle_emg_monitor(self) -> None:
+        if self._emg_window is None:
+            return
+        if self._emg_window.isVisible():
+            self._emg_window.hide()
+        else:
+            self._emg_window.show()
+            self._emg_window.raise_()
 
     def push_trigger_batch(
         self,
@@ -759,7 +1062,9 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         sig = captured.batch.signals
         has_cal = captured.meta.baseline is not None and captured.meta.peak is not None
 
-        # % MVC mode: normalize signals; Raw mode: subtract baseline if calibrated.
+        # % MVC mode: normalize signals; Raw mode: normalize by global max MVC span if
+        # calibrated, otherwise subtract baseline or show raw.
+        raw_mvc_span: float | None = None  # global max span used for raw-mode ref lines
         if self._show_mvc and has_cal:
             span = captured.meta.peak - captured.meta.baseline
             safe_span = np.where(span != 0, span, 1.0)
@@ -767,9 +1072,17 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             unit = "% MVC"
         else:
             has_baseline = captured.meta.baseline is not None
-            if has_baseline:
+            if has_cal:
+                span = captured.meta.peak - captured.meta.baseline
+                max_span = float(np.max(span[self._finger_channel_indices]))
+                raw_mvc_span = max_span if max_span != 0 else 1.0
+                sig = (sig - captured.meta.baseline) / raw_mvc_span * 100.0
+                unit = "% max MVC"
+            elif has_baseline:
                 sig = sig - captured.meta.baseline
-            unit = "a.u."
+                unit = "a.u."
+            else:
+                unit = "a.u."
         self._apply_unit_labels(unit)
 
         relative_time = (
@@ -796,8 +1109,26 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             peak_ref = self._mvc_ref_lines[local_idx]
             show_ref = not self._show_mvc and has_cal
             peak_ref.setVisible(show_ref)
-            if show_ref:
-                peak_ref.setPos(float(captured.meta.peak[ch_idx] - captured.meta.baseline[ch_idx]))
+            if show_ref and raw_mvc_span is not None:
+                finger_span = float(captured.meta.peak[ch_idx] - captured.meta.baseline[ch_idx])
+                peak_ref.setPos(finger_span / raw_mvc_span * 100.0)
+
+            # P2P and onset overlay.
+            p2p = float(np.ptp(force_data)) if force_data.size > 0 else 0.0
+            onset_ms = detect_onset(force_data, captured.trigger_sample, self._sample_rate_hz)
+            self._auto_onset_ms[local_idx] = onset_ms
+            onset_line = self._onset_lines[local_idx]
+            if onset_ms is not None:
+                onset_line.setPos(onset_ms / 1000.0)
+                onset_line.setVisible(True)
+            else:
+                onset_line.setVisible(False)
+            p2p_str = f"P2P: {p2p:.1f} {unit}"
+            self._finger_p2p_strs[local_idx] = p2p_str
+            onset_str = f"Onset: {onset_ms:.0f} ms" if onset_ms is not None else "Onset: —"
+            lbl = self._finger_info_labels[local_idx]
+            lbl.setText(f"{p2p_str}\n{onset_str}")
+            lbl.adjustSize()
 
         finger_signals = sig[:, self._finger_channel_indices]
         if relative_time.size > 0 and self._raw_plot_widgets:
@@ -828,3 +1159,25 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self.range_plot.setYRange(
             0.0, max(1.0, float(np.max(ordered_ranges)) * 1.2), padding=0.0
         )
+
+        if self._emg_window is not None:
+            self._emg_window.update_capture(captured)
+
+    def _on_onset_dragged(self, finger_idx: int, pos_seconds: float) -> None:
+        onset_ms = pos_seconds * 1000.0
+        lbl = self._finger_info_labels[finger_idx]
+        lbl.setText(f"{self._finger_p2p_strs[finger_idx]}\nOnset: {onset_ms:.0f} ms")
+        lbl.adjustSize()
+
+    def _reset_onset(self, finger_idx: int) -> None:
+        onset_ms = self._auto_onset_ms[finger_idx]
+        onset_line = self._onset_lines[finger_idx]
+        if onset_ms is not None:
+            onset_line.setPos(onset_ms / 1000.0)
+            onset_line.setVisible(True)
+        else:
+            onset_line.setVisible(False)
+        lbl = self._finger_info_labels[finger_idx]
+        onset_str = f"Onset: {onset_ms:.0f} ms" if onset_ms is not None else "Onset: —"
+        lbl.setText(f"{self._finger_p2p_strs[finger_idx]}\n{onset_str}")
+        lbl.adjustSize()

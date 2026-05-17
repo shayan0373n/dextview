@@ -24,7 +24,7 @@ class _ForceMeterDialog(QtWidgets.QDialog):
         parent: QtWidgets.QWidget | None = None,
     ) -> None:
         super().__init__(parent)
-        self.setWindowTitle("R Index — % MVC")
+        self.setWindowTitle("Any Finger — % MVC")
         self.setWindowFlag(QtCore.Qt.WindowStaysOnTopHint, True)
         self.setFixedSize(220, 460)
         self._threshold_pct = threshold_pct
@@ -207,25 +207,28 @@ class _LabJackPulse:
         self._ljm.eWriteName(self._handle, "FIO4", 0)  # type: ignore[union-attr]
 
 
-class PassedTenPercentRightIndex:
+class PassedTenPercentAnyFinger:
     """Compositor: wires _RampOnsetDetector → _ForceMeterDialog → _LabJackPulse.
 
     Stays inert until `set_active(True)`. On activation a small always-on-top
-    dialog opens showing R Index force as % MVC; it closes on deactivation.
+    dialog opens showing the max % MVC across all finger channels; it closes on
+    deactivation. Fires when any finger first crosses the threshold.
     Designed for a 0%→20% ramp ~5 s long.
     """
 
-    name = "R Index 10% MVC"
+    name = "Any Finger 10% MVC"
     ui_controls = True
 
     def __init__(
         self,
+        finger_indices: list[int],
         threshold_pct: float = 10.0,
         onset_floor_pct: float = 3.0,
         onset_dwell_s: float = 0.2,
         min_elapsed_s: float = 2.0,
         release_dwell_s: float = 0.5,
     ) -> None:
+        self._finger_indices = finger_indices
         self._threshold_pct = threshold_pct
         self._onset_floor_pct = onset_floor_pct
         self._onset_dwell_s = onset_dwell_s
@@ -247,7 +250,7 @@ class PassedTenPercentRightIndex:
         if self._meter is not None:
             self._meter.set_pct(0.0)
             self._meter.set_status("Armed — waiting for onset")
-        logger.info("PassedTenPercentRightIndex RESET — detector streak cleared")
+        logger.info("PassedTenPercentAnyFinger RESET — detector streak cleared")
 
     def set_active(self, active: bool) -> None:
         self._detector.reset()
@@ -277,22 +280,19 @@ class PassedTenPercentRightIndex:
         if batch.timestamps.shape[0] == 0:
             return
 
-        label = "R Index"
-        try:
-            i = meta.index_of(label)
-        except KeyError:
-            if self._meter is not None:
-                self._meter.set_status(f"Channel '{label}' not found in labels")
-            return
+        pct_cols = []
+        for idx in self._finger_indices:
+            span = meta.peak[idx] - meta.baseline[idx]
+            if span == 0:
+                continue
+            pct_cols.append((batch.signals[:, idx] - meta.baseline[idx]) / span * 100.0)
 
-        baseline = meta.baseline[i]
-        span = meta.peak[i] - baseline
-        if span == 0:
+        if not pct_cols:
             if self._meter is not None:
                 self._meter.set_status("Zero MVC span — recalibrate")
             return
 
-        pct = (batch.signals[:, i] - baseline) / span * 100.0
+        pct = np.max(np.stack(pct_cols, axis=1), axis=1)
         if self._meter is not None:
             self._meter.set_pct(float(pct[-1]))
 

@@ -10,7 +10,7 @@ from PyQt5 import QtCore, QtWidgets
 
 from .capture_log import CaptureLogger
 from .channels import load_channels
-from .hooks import PassedTenPercentRightIndex
+from .hooks import PassedTenPercentAnyFinger
 from .config import QuattrocentoConfig
 from .controller import QuattrocentoController
 from .models import StreamMeta
@@ -325,9 +325,19 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        channel_labels, channel_scales = load_channels(args.channels)
+        channel_labels, channel_scales, channel_kinds = load_channels(args.channels)
     except (OSError, ValueError) as exc:
         raise SystemExit(f"Failed to load channels file {args.channels!r}: {exc}") from exc
+
+    emg_channels = sorted(
+        (idx, channel_labels[idx])
+        for idx, kind in channel_kinds.items()
+        if kind == "emg"
+    )
+    finger_indices = sorted(
+        idx for idx, kind in channel_kinds.items()
+        if kind == "finger"
+    )
 
     qt_app = QtWidgets.QApplication.instance()
     if qt_app is None:
@@ -351,11 +361,12 @@ def main(argv: list[str] | None = None) -> int:
         trigger_channel=stream.config.trigger_channel,
         sample_rate_hz=stream.config.sample_rate_hz,
         trigger_threshold=args.trigger_threshold,
+        emg_channels=emg_channels,
     )
     event_hooks = [CaptureLogger(args.log_dir)] if args.log_dir else []
     controller = QuattrocentoController(
         stream.config, stream, processor, window, meta,
-        stream_hooks=[PassedTenPercentRightIndex()],
+        stream_hooks=[PassedTenPercentAnyFinger(finger_indices=finger_indices)],
         event_hooks=event_hooks,
     )
     controller.start()

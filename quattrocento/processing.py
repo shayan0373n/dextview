@@ -10,6 +10,47 @@ from .models import CapturedWindow, DataBatch, StreamMeta
 
 logger = logging.getLogger("quattrocento.processing")
 
+# These thresholds need empirical validation against real EMG/force data.
+_ONSET_SD_MULTIPLIER: float = 5.0   # SD multiples above/below pre-trigger mean
+_ONSET_MIN_CONSECUTIVE: int = 5     # consecutive threshold crossings required
+
+
+def detect_onset(
+    signal: np.ndarray,
+    trigger_idx: int,
+    sample_rate_hz: int,
+    post_skip_samples: int = 0,
+) -> float | None:
+    """Return onset time in ms relative to trigger, or None if not detected.
+
+    Uses pre-trigger mean ± _ONSET_SD_MULTIPLIER * SD as threshold.
+    Onset is confirmed after _ONSET_MIN_CONSECUTIVE consecutive threshold
+    crossings in either direction. ``post_skip_samples`` excludes the first
+    N samples after the trigger from the search (e.g. to ignore a stimulator
+    artifact); the returned time is still measured relative to the trigger.
+    """
+    pre = signal[:trigger_idx]
+    if len(pre) < 10:  # minimum pre-trigger samples needed for a stable baseline estimate
+        return None
+    mean_pre = float(np.mean(pre))
+    sd_pre = float(np.std(pre))
+    if sd_pre == 0.0:
+        return None
+    upper = mean_pre + _ONSET_SD_MULTIPLIER * sd_pre
+    lower = mean_pre - _ONSET_SD_MULTIPLIER * sd_pre
+    skip = max(0, int(post_skip_samples))
+    post = signal[trigger_idx + skip:]
+    consecutive = 0
+    for i, val in enumerate(post):
+        if val > upper or val < lower:
+            consecutive += 1
+            if consecutive >= _ONSET_MIN_CONSECUTIVE:
+                onset_sample = i + skip - (_ONSET_MIN_CONSECUTIVE - 1)
+                return onset_sample * 1000.0 / sample_rate_hz
+        else:
+            consecutive = 0
+    return None
+
 
 class TriggerWindowProcessor:
     """Detect rising AUX-in edges and collect fixed post-trigger windows."""
