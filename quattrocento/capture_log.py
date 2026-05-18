@@ -19,6 +19,7 @@ class CaptureLogger:
     ui_controls = False
 
     def __init__(self, base_dir: str | Path) -> None:
+        """Initialize the logger and create a new session directory."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         self._session_dir = Path(base_dir) / f"session_{timestamp}"
         self._session_dir.mkdir(parents=True, exist_ok=True)
@@ -29,12 +30,15 @@ class CaptureLogger:
         return self._session_dir
 
     def set_active(self, active: bool) -> None:
+        """Set whether the hook is active."""
         pass
 
     def reset(self) -> None:
+        """Reset internal hook state."""
         pass
 
     def __call__(self, window: CapturedWindow) -> None:
+        """Serializes the captured window to a numbered JSON file in the session directory."""
         self._count += 1
         path = self._session_dir / f"event_{self._count:05d}.json"
         payload = {

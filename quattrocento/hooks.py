@@ -64,6 +64,7 @@ class _ForceMeterDialog(QtWidgets.QDialog):
         self._set_bar_color("#94A3B8")
 
     def _set_bar_color(self, color: str) -> None:
+        """Sets the CSS color of the progress bar chunk."""
         self._bar.setStyleSheet(
             "QProgressBar { border: 1px solid #BFD0E1; border-radius: 6px; "
             "background: #F4F7FB; } "
@@ -71,6 +72,7 @@ class _ForceMeterDialog(QtWidgets.QDialog):
         )
 
     def set_pct(self, pct: float) -> None:
+        """Updates the progress bar and label with the given MVC percentage."""
         self._value_label.setText(f"{pct:.1f}%")
         clamped = max(0.0, min(self._max_pct, pct))
         self._bar.setValue(int(round(clamped * 10)))
@@ -82,6 +84,7 @@ class _ForceMeterDialog(QtWidgets.QDialog):
             self._set_bar_color("#6FA8DC")
 
     def set_status(self, text: str) -> None:
+        """Updates the status line text."""
         self._status_label.setText(text)
 
 
@@ -112,6 +115,7 @@ class _RampOnsetDetector:
         return self._ramp_onset_t
 
     def reset(self) -> None:
+        """Clears all streak and onset state, resetting the detector to idle."""
         self._streak_samples = 0
         self._streak_start_t = None
         self._below_streak = 0
@@ -157,6 +161,7 @@ class _RampOnsetDetector:
         timestamps: np.ndarray,
         sample_rate_hz: int,
     ) -> None:
+        """Advances the onset/release streak counters by one batch of samples."""
         onset_dwell = max(1, int(round(self._onset_dwell_s * sample_rate_hz)))
         release_dwell = max(1, int(round(self._release_dwell_s * sample_rate_hz)))
         floor = self._onset_floor_pct
@@ -187,21 +192,24 @@ class _LabJackPulse:
     """Manages a LabJack T4 connection and fires a 5 ms TTL pulse on FIO4."""
 
     def __init__(self) -> None:
-        self._ljm: object | None = None
-        self._handle: object | None = None
+        self._ljm = None
+        self._handle = None
 
     def open(self) -> None:
+        """Established connection to a LabJack T4 device."""
         from labjack import ljm
         self._ljm = ljm
         self._handle = ljm.openS("T4", "ANY", "ANY")
 
     def close(self) -> None:
+        """Close the LabJack connection."""
         if self._handle is not None:
             self._ljm.close(self._handle)  # type: ignore[union-attr]
             self._handle = None
             self._ljm = None
 
     def fire(self) -> None:
+        """Fire a 5 ms TTL pulse on FIO4."""
         self._ljm.eWriteName(self._handle, "FIO4", 1)  # type: ignore[union-attr]
         time.sleep(0.005)
         self._ljm.eWriteName(self._handle, "FIO4", 0)  # type: ignore[union-attr]
@@ -246,6 +254,7 @@ class PassedTenPercentAnyFinger:
         self._meter: _ForceMeterDialog | None = None
 
     def reset(self) -> None:
+        """Reset internal hook state."""
         self._detector.reset()
         if self._meter is not None:
             self._meter.set_pct(0.0)
@@ -253,6 +262,7 @@ class PassedTenPercentAnyFinger:
         logger.info("PassedTenPercentAnyFinger RESET — detector streak cleared")
 
     def set_active(self, active: bool) -> None:
+        """Set whether the hook is active."""
         self._detector.reset()
         if active:
             self._hw.open()
@@ -271,6 +281,7 @@ class PassedTenPercentAnyFinger:
         logger.info(f"{'ACTIVATED' if active else 'DEACTIVATED'} — state cleared")
 
     def __call__(self, batch: DataBatch, meta: StreamMeta) -> None:
+        """Process a data batch and update the state machine."""
         if not self._active:
             return
         if meta.baseline is None or meta.peak is None:

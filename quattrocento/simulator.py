@@ -53,6 +53,7 @@ BATCH_SECONDS = 0.05
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    """Parses command-line arguments for the simulator."""
     parser = argparse.ArgumentParser(
         description="Quattrocento rebroadcast simulator (synthetic data over TCP)."
     )
@@ -104,6 +105,7 @@ class FrameSynthesizer:
         self._event_profile = np.linspace(7.0, 12.0, force_count, endpoint=True)
 
     def next_frames(self, sample_count: int) -> bytes:
+        """Synthesizes the next block of frames and returns them as raw bytes."""
         timestamps = (
             np.arange(self._sample_index, self._sample_index + sample_count, dtype=np.float64)
             / self._sample_rate_hz
@@ -135,6 +137,7 @@ class FrameSynthesizer:
         return frame.tobytes()
 
     def _synthesize_forces(self, timestamps: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Generates synthetic force signals with sinusoids and event envelopes."""
         base = FORCE_BASE_AMPLITUDE * (
             1.0
             + 0.15 * np.sin(
@@ -153,6 +156,7 @@ class FrameSynthesizer:
         return base + event_response
 
     def _synthesize_aux_in(self, timestamps: NDArray[np.float64]) -> NDArray[np.int16]:
+        """Generates a periodic pulse on the trigger channel."""
         aux = np.zeros(timestamps.shape[0], dtype=np.int16)
         if self._trigger_interval_seconds <= 0:
             return aux
@@ -162,6 +166,7 @@ class FrameSynthesizer:
         return aux
 
     def _event_envelope(self, timestamps: NDArray[np.float64]) -> NDArray[np.float64]:
+        """Returns a Gaussian-like event envelope based on trigger timing."""
         if self._trigger_interval_seconds <= 0:
             return np.zeros_like(timestamps)
         phase = np.mod(timestamps, self._trigger_interval_seconds)
@@ -256,6 +261,7 @@ def _try_read_command(
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Terminal entry point: listens for and serves simulator clients."""
     args = parse_args(argv)
 
     server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

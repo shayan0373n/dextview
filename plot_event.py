@@ -4,6 +4,7 @@ import numpy as np
 import os
 
 def plot_event(json_path, output_path):
+    """Plots the R Index force trace from a JSON event file and saves a PNG."""
     with open(json_path, 'r') as f:
         data = json.load(f)
     

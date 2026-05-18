@@ -50,11 +50,12 @@ class RebroadcastStreamReadTests(unittest.TestCase):
 
         batch = self.stream.read_batch()
 
+        scale = 32768.0
         self.assertEqual(batch.signals.shape, (sample_count, self.n_channels))
-        np.testing.assert_array_equal(batch.signals[:, 0], -100.0)
-        np.testing.assert_array_equal(
+        np.testing.assert_array_almost_equal(batch.signals[:, 0], -100.0 / scale)
+        np.testing.assert_array_almost_equal(
             batch.signals[:, 10],
-            frame_values[:, 10].astype(np.float64),
+            frame_values[:, 10].astype(np.float64) / scale,
         )
 
 

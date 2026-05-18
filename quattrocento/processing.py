@@ -56,7 +56,6 @@ class TriggerWindowProcessor:
     """Detect rising AUX-in edges and collect fixed post-trigger windows."""
 
     def __init__(self, config: QuattrocentoConfig) -> None:
-        """Configure trigger threshold, capture window length, and channel count."""
         self._post_samples = config.post_trigger_samples
         self._pre_samples = config.pre_trigger_samples
         self._total_samples = config.total_window_samples
@@ -189,6 +188,7 @@ class TriggerWindowProcessor:
     def _collect_range(
         self, batch: DataBatch, start: int, end: int, meta: StreamMeta
     ) -> CapturedWindow | None:
+        """Copies [start, end) from batch into the capture buffer; returns a window if complete."""
         count = end - start
         wp = self._write_pos
         self._time_buffer[wp : wp + count] = batch.timestamps[start:end]
@@ -206,6 +206,7 @@ class TriggerWindowProcessor:
         start: int,
         end: int,
     ) -> None:
+        """Writes [start, end) from the batch into the pre-trigger ring buffer."""
         if self._pre_samples == 0:
             return
         n = end - start
@@ -235,6 +236,7 @@ class TriggerWindowProcessor:
     def _read_ring_chronological(
         self,
     ) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+        """Returns ring buffer contents in chronological order as (timestamps, signals)."""
         if self._ring_filled == 0:
             return (
                 np.empty(0, dtype=np.float64),
@@ -253,6 +255,7 @@ class TriggerWindowProcessor:
         return time_out, signal_out
 
     def _begin_capture_with_preroll(self, batch: DataBatch, edge_idx: int) -> None:
+        """Starts a new capture window, prepending ring-buffer pre-trigger samples."""
         self._capturing = True
         self._write_pos = 0
 
@@ -298,6 +301,7 @@ class TriggerWindowProcessor:
     def _find_rising_edges(
         self, trigger_col: NDArray[np.float64], prev_high: bool
     ) -> tuple[NDArray[np.intp], bool]:
+        """Returns indices of rising edges in trigger_col and the last high/low state."""
         if self._trigger_dc is None or self._samples_seen < self._warmup_samples:
             return np.array([], dtype=np.intp), prev_high
         threshold = max(
@@ -320,6 +324,7 @@ class TriggerWindowProcessor:
         return edge_indices, bool(trigger_high[-1])
 
     def _complete_capture(self, meta: StreamMeta) -> CapturedWindow:
+        """Finalizes the buffer into a CapturedWindow and resets capture state."""
         timestamps = self._time_buffer[: self._write_pos].copy()
         signals = self._signal_buffer[: self._write_pos, :].copy()
         trigger_sample = self._trigger_sample_in_buffer

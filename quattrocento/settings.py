@@ -20,12 +20,14 @@ except ModuleNotFoundError:  # pragma: no cover
 
 
 def _normalize_token(value: Any) -> str:
+    """Normalizes a string for lookup by lowercase, stripping spaces, and replacing hyphens."""
     return str(value).strip().lower().replace("-", "_").replace(" ", "_")
 
 
 def _parse_lookup_or_bits(
     value: Any, *, field_name: str, name_to_bits: Mapping[str, int], allow_bit_3: bool = True
 ) -> int:
+    """Parses a setting value into its 2-bit representation based on a name-to-bit mapping."""
     if isinstance(value, bool):
         raise ValueError(f"{field_name} must be a string or integer")
 
@@ -42,6 +44,7 @@ def _parse_lookup_or_bits(
 
 
 def _parse_filter_bits(value: Any, *, field_name: str, hz_to_bits: Mapping[float, int]) -> int:
+    """Parses a filter frequency (Hz) into its 2-bit Quattrocento encoding."""
     if isinstance(value, bool):
         raise ValueError(f"{field_name} must be a frequency or bit value")
 
@@ -62,6 +65,7 @@ def _parse_filter_bits(value: Any, *, field_name: str, hz_to_bits: Mapping[float
 def _parse_conf2_block(
     raw_block: Mapping[str, Any] | None, *, default_byte: int, block_name: str
 ) -> int:
+    """Parses a single 8-bit CONF2 table from its sub-fields (side/hpf/lpf/mode)."""
     if raw_block is None:
         return default_byte
     if not isinstance(raw_block, Mapping):
@@ -109,6 +113,7 @@ def _parse_conf2_block(
 def _parse_conf2_overrides(
     raw_overrides: Mapping[str, Any] | None, *, default_byte: int
 ) -> tuple[int, ...]:
+    """Applies per-input-block overrides to the default CONF2 settings."""
     conf2_bytes = [default_byte for _ in range(len(INPUT_BLOCK_NAMES))]
     if raw_overrides is None:
         return tuple(conf2_bytes)

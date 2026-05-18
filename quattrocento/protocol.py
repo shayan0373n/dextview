@@ -75,6 +75,7 @@ def smallest_nch_for_channel_count(min_channels: int) -> int:
 
 
 def _crc8(values: Sequence[int], length: int) -> int:
+    """Calculates CRC-8 checksum for Quattrocento command blocks."""
     crc = 0
     index = 0
     remaining = length

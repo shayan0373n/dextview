@@ -28,6 +28,7 @@ _MVC_COLOR_BINS: tuple[tuple[float, str, str], ...] = (
 
 
 def _mvc_bin_color(peak_force: float) -> str:
+    """Returns a color hex string based on which MVC-percentage bin the peak force falls into."""
     for threshold, _label, color in _MVC_COLOR_BINS:
         if peak_force <= threshold:
             return color
@@ -159,6 +160,7 @@ class TriggerMonitorWindow(QtWidgets.QWidget):
         self._plot.addItem(self._lower_line)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        """Rejects the close event and hides the window instead."""
         self.hide()
         event.ignore()
 
@@ -171,6 +173,7 @@ class TriggerMonitorWindow(QtWidgets.QWidget):
         effective_threshold: float,
         warmup_remaining: int,
     ) -> None:
+        """Pushes a new batch of trigger-channel data into the rolling buffer and updates UI chips."""
         n = len(timestamps)
         if n == 0:
             return
@@ -233,6 +236,7 @@ class TriggerMonitorWindow(QtWidgets.QWidget):
             self._trigger_lines = keep
 
     def mark_trigger(self, t: float) -> None:
+        """Adds a vertical marker at the specified time to the rolling trigger plot."""
         line = pg.InfiniteLine(
             pos=t, angle=90,
             pen=pg.mkPen("#F6B73C", width=2),
@@ -379,21 +383,25 @@ class EmgMonitorWindow(QtWidgets.QWidget):
         root.addWidget(grid_container, stretch=1)
 
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        """Rejects the close event and hides the window instead."""
         self.hide()
         event.ignore()
 
     def _on_scale_toggled(self, checked: bool) -> None:
+        """Toggles between global and per-channel vertical scaling."""
         self._global_scale = not checked
         self._scale_button.setText("Per Channel Scale" if checked else "Global Scale")
         if self._last_capture is not None:
             self.update_capture(self._last_capture)
 
     def _on_skip_changed(self, value: float) -> None:
+        """Updates the artifact pre-skip duration and refreshes the current view."""
         self._post_skip_ms = float(value)
         if self._last_capture is not None:
             self.update_capture(self._last_capture)
 
     def update_capture(self, captured: CapturedWindow) -> None:
+        """Updates the EMG panels with data from a new CapturedWindow."""
         self._last_capture = captured
         if not self._plot_widgets:
             return
@@ -477,6 +485,7 @@ class _OnsetLine(pg.InfiniteLine):
     reset_requested = QtCore.pyqtSignal()
 
     def mouseClickEvent(self, ev) -> None:
+        """Shows a right-click context menu to reset the onset marker."""
         if ev.button() == QtCore.Qt.RightButton:
             menu = QtWidgets.QMenu()
             action = menu.addAction("Reset to auto-detected")
@@ -589,6 +598,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._apply_unit_labels("a.u.")
 
     def _apply_palette(self) -> None:
+        """Applies the global pyqtgraph config options and QSS stylesheet."""
         pg.setConfigOptions(antialias=True, foreground="#27313D", background="#F4F7FB")
         self.setStyleSheet(
             """
@@ -662,6 +672,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         )
 
     def _build_layout(self) -> None:
+        """Constructs and wires all child widgets into the main window layout."""
         self.setWindowTitle("Quattrocento Triggered Force Application")
         self.resize(1140, 760)
         self.setFocusPolicy(Qt.StrongFocus)
@@ -738,6 +749,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         root_layout.addWidget(raw_grid_container, stretch=5)
 
     def _style_range_plot(self) -> None:
+        """Configures visual appearance and initial state of the range bar chart."""
         self.range_plot.setTitle("Force Range by Finger (max - min)")
         self.range_plot.setMenuEnabled(False)
         self.range_plot.showGrid(x=False, y=True, alpha=0.2)
@@ -754,6 +766,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._draw_range_bars(np.zeros(len(self._bar_display_labels), dtype=np.float64))
 
     def _build_raw_grid(self, grid_layout: QtWidgets.QGridLayout) -> None:
+        """Creates and inserts one PlotWidget per finger into the grid layout."""
         n_rows = (_EXPECTED_FINGER_COUNT + _RAW_GRID_COLUMNS - 1) // _RAW_GRID_COLUMNS
         last_row = n_rows - 1
 
@@ -846,6 +859,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             panel.setXLink(reference)
 
     def _build_legend(self) -> QtWidgets.QWidget:
+        """Builds the % MVC color-bin legend widget."""
         legend_widget = QtWidgets.QWidget()
         layout = QtWidgets.QHBoxLayout(legend_widget)
         layout.setContentsMargins(0, 0, 16, 0)
@@ -862,6 +876,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
 
     @staticmethod
     def _build_legend_item(text: str, color: str) -> QtWidgets.QWidget:
+        """Creates a single color-swatch + label legend entry."""
         item = QtWidgets.QWidget()
         item_layout = QtWidgets.QHBoxLayout(item)
         item_layout.setContentsMargins(0, 0, 0, 0)
@@ -879,6 +894,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         return item
 
     def _draw_range_bars(self, heights: np.ndarray) -> None:
+        """Updates or creates the bar graph item with the given per-finger heights."""
         if self._bar_item is not None:
             self._bar_item.setOpts(height=heights)
             return
@@ -892,6 +908,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self.range_plot.addItem(self._bar_item)
 
     def _install_navigation_shortcuts(self) -> None:
+        """Binds Left/Right arrow keys to the previous/next event signals."""
         self._previous_shortcut = QtWidgets.QShortcut(
             QtGui.QKeySequence(Qt.Key_Left), self
         )
@@ -905,6 +922,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._next_shortcut.activated.connect(self.next_requested.emit)
 
     def _toggle_trigger_monitor(self) -> None:
+        """Shows the trigger monitor window if hidden, hides it if visible."""
         if self._trigger_monitor.isVisible():
             self._trigger_monitor.hide()
         else:
@@ -912,6 +930,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             self._trigger_monitor.raise_()
 
     def _toggle_emg_monitor(self) -> None:
+        """Shows the EMG monitor window if hidden, hides it if visible."""
         if self._emg_window is None:
             return
         if self._emg_window.isVisible():
@@ -929,12 +948,14 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         effective_threshold: float,
         warmup_remaining: int,
     ) -> None:
+        """Forwards live trigger data to the monitor window when it is visible."""
         if self._trigger_monitor.isVisible():
             self._trigger_monitor.push_batch(
                 timestamps, trigger_col, dc, noise, effective_threshold, warmup_remaining
             )
 
     def mark_trigger(self, t: float) -> None:
+        """Passes a trigger timestamp to the monitor window when it is visible."""
         if self._trigger_monitor.isVisible():
             self._trigger_monitor.mark_trigger(t)
 
@@ -945,6 +966,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         on_toggle: Callable[[bool], None],
         on_reset: Callable[[], None],
     ) -> None:
+        """Adds a toggle + reset button pair for the named hook to the toolbar."""
         toggle_btn = QtWidgets.QPushButton(name)
         toggle_btn.setObjectName("hookToggle")
         toggle_btn.setCheckable(True)
@@ -957,33 +979,40 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._hook_controls_layout.addWidget(reset_btn)
 
     def revert_baseline_button(self) -> None:
+        """Unchecks the baseline calibration button without triggering signals."""
         self._baseline_button.blockSignals(True)
         self._baseline_button.setChecked(False)
         self._baseline_button.blockSignals(False)
 
     def revert_peak_button(self) -> None:
+        """Unchecks the peak calibration button without triggering signals."""
         self._peak_button.blockSignals(True)
         self._peak_button.setChecked(False)
         self._peak_button.blockSignals(False)
 
     def show_error(self, message: str) -> None:
+        """Displays a critical error message in a popup dialog."""
         QtWidgets.QMessageBox.warning(self, "Error", message)
 
     def set_stream_error(self) -> None:
+        """Updates the acquisition label to indicate a stream disconnect or error."""
         self._acquisition_label.setText("State: Stream error")
 
     def set_stream_state(self, sample_rate_hz: int, captures: int, capturing: bool) -> None:
+        """Updates the stream status labels in the UI."""
         state_text = "Capturing window..." if capturing else "Waiting for trigger"
         self._acquisition_label.setText(f"State: {state_text}")
         self._capture_count_label.setText(f"Events: {captures}")
         self._sampling_label.setText(f"Sample rate: {sample_rate_hz} Hz")
 
     def set_last_trigger_now(self) -> None:
+        """Records and displays the current wall-clock time as the last trigger time."""
         self._last_trigger_label.setText(
             f"Last trigger: {datetime.now().strftime('%H:%M:%S')}"
         )
 
     def set_calibration_status(self, baseline_done: bool, peak_done: bool) -> None:
+        """Updates the calibration summary label with rest and MVC status marks."""
         rest_mark = "✓" if baseline_done else "✗"
         mvc_mark = "✓" if peak_done else "✗"
         self._cal_status_label.setText(f"Cal: Rest {rest_mark} | MVC {mvc_mark}")
@@ -1015,9 +1044,11 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         dialog.exec_()
 
     def _apply_unit_labels(self, unit: str) -> None:
+        """Updates the Y-axis label of the range plot with the current data units."""
         self.range_plot.setLabel("left", "Range", units=unit)
 
     def set_event_navigation(self, current_index: int | None, total_events: int) -> None:
+        """Updates the navigation buttons and status based on the current history position."""
         if total_events <= 0 or current_index is None:
             self._event_position_label.setText("Viewing: -/-")
             self._previous_button.setEnabled(False)
@@ -1031,12 +1062,14 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._next_button.setEnabled(current_index < (total_events - 1))
 
     def _on_display_mode_toggled(self, checked: bool) -> None:
+        """Toggles between display modes and refreshes the visualization."""
         self._show_mvc = not checked
         self._display_mode_button.setText("Raw" if checked else "% MVC")
         if self._last_capture is not None:
             self.update_capture(self._last_capture)
 
     def _on_scale_toggled(self, checked: bool) -> None:
+        """Toggles between global and per-finger Y-axis scaling."""
         self._global_scale = not checked
         self._scale_button.setText("Per Finger Scale" if checked else "Global Scale")
         self._set_per_finger_axes(per_finger=not self._global_scale)
@@ -1164,12 +1197,14 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             self._emg_window.update_capture(captured)
 
     def _on_onset_dragged(self, finger_idx: int, pos_seconds: float) -> None:
+        """Updates the info label when a user manually drags an onset marker."""
         onset_ms = pos_seconds * 1000.0
         lbl = self._finger_info_labels[finger_idx]
         lbl.setText(f"{self._finger_p2p_strs[finger_idx]}\nOnset: {onset_ms:.0f} ms")
         lbl.adjustSize()
 
     def _reset_onset(self, finger_idx: int) -> None:
+        """Resets a finger's onset marker to its automatically detected position."""
         onset_ms = self._auto_onset_ms[finger_idx]
         onset_line = self._onset_lines[finger_idx]
         if onset_ms is not None:

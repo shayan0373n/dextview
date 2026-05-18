@@ -97,7 +97,6 @@ class ProxyStream:
                 f"Failed to connect to device at {device_host}:{device_port}: {exc}"
             ) from exc
 
-        origin_sock.sendall(init_bytes)
         client_sock.setblocking(False)
         origin_sock.setblocking(False)
 
@@ -116,6 +115,7 @@ class ProxyStream:
         return self._config
 
     def read_batch(self) -> DataBatch:
+        """Forwards control bytes and mirrors data between client and origin."""
         # Forward any control bytes from the client to the origin.
         if self._client_sock is not None:
             try:
@@ -148,6 +148,7 @@ class ProxyStream:
         return self._parser.drain()
 
     def close(self) -> None:
+        """Stops upstream/downstream flow and closes all sockets."""
         if self._origin_sock is not None:
             try:
                 self._origin_sock.setblocking(True)
@@ -156,9 +157,15 @@ class ProxyStream:
                 self._origin_sock.sendall(build_stop_command())
             except OSError:
                 pass
-        self._close_sockets()
+            self._origin_sock.close()
+            self._origin_sock = None
+
+        if self._client_sock is not None:
+            self._client_sock.close()
+            self._client_sock = None
 
     def _close_sockets(self) -> None:
+        """Closes both client and origin sockets and clears their references."""
         for attr in ("_origin_sock", "_client_sock"):
             sock: socket.socket | None = getattr(self, attr)
             if sock is not None:

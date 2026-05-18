@@ -101,6 +101,7 @@ def detect_stream_params(
 
 
 def _detect_n_channels_from_data(raw_data: NDArray) -> int:
+    """Detect n_channels from a raw data buffer by analyzing the ramp signal."""
     for n_channels in POSSIBLE_CHANNEL_COUNTS:
         usable_samples = (len(raw_data) // n_channels) * n_channels
         if usable_samples == 0:
@@ -123,6 +124,7 @@ def _detect_n_channels_from_data(raw_data: NDArray) -> int:
 
 
 def _resolve_sampling_rate(target_samples: int, actual_duration: float) -> int:
+    """Matches measured rate against the nearest supported Quattrocento rate."""
     if actual_duration <= 0:
         return DEFAULT_SAMPLING_RATE
 
@@ -137,6 +139,7 @@ def _resolve_sampling_rate(target_samples: int, actual_duration: float) -> int:
 
 
 def _ramp_consistency_ratio(signal_column: NDArray) -> float:
+    """Calculate how consistent the ramp steps are."""
     if len(signal_column) < 10:
         return 0.0
     diffs = np.diff(signal_column)
@@ -147,6 +150,7 @@ def _ramp_consistency_ratio(signal_column: NDArray) -> float:
 
 
 def _get_ramp_step(signal_column: NDArray) -> int | None:
+    """Extract the most frequent step size from the ramp column."""
     if len(signal_column) < 10:
         return None
     diffs = np.diff(signal_column)

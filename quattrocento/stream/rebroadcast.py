@@ -31,6 +31,7 @@ class RebroadcastStream:
         return self._config
 
     def read_batch(self) -> DataBatch:
+        """Reads and parses the latest chunk of data from the rebroadcast server."""
         self._ensure_connected()
         try:
             raw = drain_socket(self._socket)
@@ -41,6 +42,7 @@ class RebroadcastStream:
         return self._parser.drain()
 
     def close(self) -> None:
+        """Sends stopTX and closes the TCP connection."""
         if self._socket is None:
             return
         try:
@@ -51,6 +53,7 @@ class RebroadcastStream:
         self._close_socket()
 
     def _ensure_connected(self) -> None:
+        """Establishes the connection and sends startTX if not déjà vu."""
         if self._socket is not None:
             return
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -71,6 +74,7 @@ class RebroadcastStream:
         self._socket = sock
 
     def _close_socket(self) -> None:
+        """Closes the socket and clears the reference."""
         if self._socket is None:
             return
         try:

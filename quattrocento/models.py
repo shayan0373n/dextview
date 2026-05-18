@@ -16,6 +16,10 @@ class DataBatch:
     timestamps: NDArray[np.float64]   # (samples,)
     signals: NDArray[np.float64]      # (samples, n_channels)
 
+    def __post_init__(self) -> None:
+        if self.timestamps.shape[0] != self.signals.shape[0]:
+            raise ValueError("Timestamps and signals must have the same number of samples")
+
 
 @dataclass(slots=True, frozen=True)
 class StreamMeta:
@@ -60,9 +64,17 @@ class Stream(Protocol):
     """Structural interface satisfied by all stream types."""
 
     @property
-    def config(self) -> QuattrocentoConfig: ...
-    def read_batch(self) -> DataBatch: ...
-    def close(self) -> None: ...
+    def config(self) -> QuattrocentoConfig:
+        """The runtime configuration of the stream."""
+        ...
+
+    def read_batch(self) -> DataBatch:
+        """Read the latest chunk of data from the stream."""
+        ...
+
+    def close(self) -> None:
+        """Gracefully shut down the stream."""
+        ...
 
 
 class _Hook(Protocol):
@@ -71,8 +83,13 @@ class _Hook(Protocol):
     name: str
     ui_controls: bool
 
-    def set_active(self, active: bool) -> None: ...
-    def reset(self) -> None: ...
+    def set_active(self, active: bool) -> None:
+        """Enable or disable the hook."""
+        ...
+
+    def reset(self) -> None:
+        """Reset the hook's internal state."""
+        ...
 
 
 class StreamHook(_Hook, Protocol):

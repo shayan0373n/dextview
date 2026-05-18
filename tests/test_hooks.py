@@ -4,7 +4,7 @@ from unittest.mock import MagicMock
 import numpy as np
 
 from quattrocento.config import QuattrocentoConfig
-from quattrocento.hooks import PassedTenPercentRightIndex, _RampOnsetDetector
+from quattrocento.hooks import PassedTenPercentAnyFinger, _RampOnsetDetector
 from quattrocento.models import DataBatch, StreamMeta
 
 
@@ -24,8 +24,9 @@ def _detector(
     )
 
 
-def _hook(**kwargs) -> PassedTenPercentRightIndex:
-    h = PassedTenPercentRightIndex(**kwargs)
+def _hook(**kwargs) -> PassedTenPercentAnyFinger:
+    kwargs.setdefault("finger_indices", [0])
+    h = PassedTenPercentAnyFinger(**kwargs)
     h._hw = MagicMock()
     h._meter = MagicMock()
     h._active = True
@@ -167,12 +168,12 @@ class OnsetDetectorOneShotTests(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# PassedTenPercentRightIndex (compositor)
+# PassedTenPercentAnyFinger (compositor)
 # ---------------------------------------------------------------------------
 
 class CompositorInactiveTests(unittest.TestCase):
     def test_inactive_hook_does_not_touch_hw(self) -> None:
-        h = PassedTenPercentRightIndex()
+        h = PassedTenPercentAnyFinger(finger_indices=[0])
         h._hw = MagicMock()
         h._meter = MagicMock()
         h(_batch([5.0, 15.0], [0.0, 1.0]), _meta())

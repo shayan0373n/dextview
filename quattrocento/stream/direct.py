@@ -52,6 +52,7 @@ class DirectStream:
         return self._config
 
     def read_batch(self) -> DataBatch:
+        """Reads and parses the latest chunk of data from the device."""
         self._ensure_connected()
         try:
             raw = drain_socket(self._socket)
@@ -62,6 +63,7 @@ class DirectStream:
         return self._parser.drain()
 
     def close(self) -> None:
+        """Stops acquisition and closes the TCP connection."""
         if self._socket is None:
             return
         try:
@@ -72,6 +74,7 @@ class DirectStream:
         self._close_socket()
 
     def _ensure_connected(self) -> None:
+        """Establishes the connection and starts acquisition if not déjà vu."""
         if self._socket is not None:
             return
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -94,6 +97,7 @@ class DirectStream:
         self._socket = sock
 
     def _close_socket(self) -> None:
+        """Closes the socket and clears the reference."""
         if self._socket is None:
             return
         try:

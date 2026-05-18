@@ -28,6 +28,7 @@ from .ui import QuattrocentoMainWindow
 
 
 def _parse_auto_or_int(raw: str) -> str | int:
+    """Parse a string as 'auto' or an integer."""
     if raw.lower() == "auto":
         return "auto"
     try:
@@ -170,6 +171,7 @@ def _validate_channel_indices(
     trigger_channel: int,
     n_channels: int,
 ) -> None:
+    """Validate that channel indices and trigger channel are within range."""
     for idx, label in channel_labels.items():
         if idx >= n_channels:
             raise SystemExit(
@@ -188,6 +190,7 @@ def _build_real_stream(
     channel_labels: dict[int, str],
     channel_scales: dict[int, float],
 ) -> tuple[DirectStream, StreamMeta]:
+    """Build a DirectStream for a real Quattrocento device connection."""
     if args.host is None or args.port is None:
         raise SystemExit("--host and --port are required for --source=real")
     if args.sample_rate is None or args.sample_rate == "auto":
@@ -241,6 +244,7 @@ def _build_rebroadcast_stream(
     channel_labels: dict[int, str],
     channel_scales: dict[int, float],
 ) -> tuple[RebroadcastStream, StreamMeta]:
+    """Build a RebroadcastStream for connecting to a TCP stream (e.g., OT BioLab+)."""
     if args.host is None or args.port is None:
         raise SystemExit("--host and --port are required for --source=rebroadcast")
 
@@ -288,6 +292,7 @@ def _build_proxy_stream(
     channel_labels: dict[int, str],
     channel_scales: dict[int, float],
 ) -> tuple[ProxyStream, StreamMeta]:
+    """Build a ProxyStream to sit between an upstream client and a device."""
     if args.host is None or args.port is None:
         raise SystemExit("--host and --port are required for --source=proxy (the device)")
 

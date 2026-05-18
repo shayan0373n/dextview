@@ -61,11 +61,13 @@ class QuattrocentoController(QtCore.QObject):
                 )
 
     def start(self) -> None:
+        """Starts the stream polling and shows the UI."""
         self._refresh_status()
         self._window.show()
         self._timer.start(self._config.ui_refresh_ms)
 
     def _on_baseline_toggled(self, active: bool) -> None:
+        """Handles toggling of the baseline calibration mode."""
         if active and self._processor.is_capturing:
             self._window.show_error(
                 "Cannot start rest calibration while a trigger window is in progress."
@@ -87,6 +89,7 @@ class QuattrocentoController(QtCore.QObject):
             self._update_calibration_ui()
 
     def _on_peak_toggled(self, active: bool) -> None:
+        """Handles toggling of the peak calibration mode."""
         if active and self._processor.is_capturing:
             self._window.show_error(
                 "Cannot start MVC calibration while a trigger window is in progress."
@@ -108,6 +111,7 @@ class QuattrocentoController(QtCore.QObject):
             self._update_calibration_ui()
 
     def _show_calibration_report(self) -> None:
+        """Updates and displays the calibration report in the UI."""
         if self._meta.baseline is None and self._meta.peak is None:
             return
         display_channels = sorted(
@@ -121,12 +125,14 @@ class QuattrocentoController(QtCore.QObject):
         )
 
     def _update_calibration_ui(self) -> None:
+        """Refreshes the calibration status indicators in the UI."""
         self._window.set_calibration_status(
             baseline_done=self._meta.baseline is not None,
             peak_done=self._meta.peak is not None,
         )
 
     def _on_timer_tick(self) -> None:
+        """Periodically polls the stream for new data and updates the UI."""
         try:
             batch = self._stream.read_batch()
         except Exception:
@@ -161,16 +167,19 @@ class QuattrocentoController(QtCore.QObject):
         self._refresh_status()
 
     def _update_baseline(self, batch: DataBatch) -> None:
+        """Appends new batch data to the baseline calibration buffer."""
         if batch.signals.shape[0] == 0:
             return
         self._baseline_buffer.append(batch.signals)
 
     def _update_peak(self, batch: DataBatch) -> None:
+        """Appends new batch data to the peak calibration buffer."""
         if batch.signals.shape[0] == 0:
             return
         self._peak_buffer.append(batch.signals)
 
     def _append_capture(self, captured: CapturedWindow) -> None:
+        """Stores a new capture window and updates the UI to show it."""
         was_showing_latest = self._current_event_index is None or (
             self._current_event_index == len(self._history) - 1
         )
@@ -189,13 +198,14 @@ class QuattrocentoController(QtCore.QObject):
             self._window.update_capture(captured)
 
     def _show_previous_event(self) -> None:
-        if self._current_event_index is None or self._current_event_index <= 0:
-            return
-        self._current_event_index -= 1
-        self._window.update_capture(self._history[self._current_event_index])
-        self._refresh_status()
+        """Display the previous event in the history."""
+        if self._current_event_index is not None and self._current_event_index > 0:
+            self._current_event_index -= 1
+            self._window.update_capture(self._history[self._current_event_index])
+            self._refresh_status()
 
     def _show_next_event(self) -> None:
+        """Navigates to the next captured event in history."""
         if self._current_event_index is None:
             return
         if self._current_event_index >= len(self._history) - 1:
@@ -205,6 +215,7 @@ class QuattrocentoController(QtCore.QObject):
         self._refresh_status()
 
     def _refresh_status(self) -> None:
+        """Updates stream and navigation status indicators in the UI."""
         self._window.set_stream_state(
             sample_rate_hz=self._config.sample_rate_hz,
             captures=len(self._history),
