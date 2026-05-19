@@ -8,7 +8,7 @@ from PyQt5 import QtCore
 
 from .config import QuattrocentoConfig
 from .models import CapturedWindow, DataBatch, EventHook, Stream, StreamHook, StreamMeta
-from .processing import TriggerWindowProcessor
+from .processing import TriggerWindowProcessor, detect_onset
 from .ui import QuattrocentoMainWindow
 
 _DEFAULT_MAX_HISTORY = 200
@@ -274,13 +274,41 @@ class QuattrocentoController(QtCore.QObject):
 
         if was_showing_latest:
             self._current_event_index = len(self._history) - 1
-            self._window.update_capture(captured)
+            self._update_window_capture(captured)
+
+    def _update_window_capture(self, captured: CapturedWindow) -> None:
+        """Helper to deconstruct CapturedWindow and call the UI boundary."""
+        # Pre-calculate onsets for all fingers to pass across the boundary.
+        onset_ms_list = []
+        # Get finger indices from window (we could also get them from meta if we had a mapping)
+        # But controller knows the config.
+        finger_indices = self._window._finger_channel_indices
+        for idx in finger_indices:
+            # We use the raw signals for onset detection.
+            # detect_onset expects signal, trigger_idx, sample_rate
+            onset = detect_onset(
+                captured.batch.signals[:, idx],
+                captured.trigger_sample,
+                captured.meta.config.sample_rate_hz
+            )
+            onset_ms_list.append(onset)
+
+        self._window.update_capture(
+            timestamps=captured.batch.timestamps,
+            signals=captured.batch.signals,
+            trigger_sample=captured.trigger_sample,
+            sample_rate_hz=captured.meta.config.sample_rate_hz,
+            baseline=captured.meta.baseline,
+            peak=captured.meta.peak,
+            empty=captured.meta.empty,
+            onset_ms_list=onset_ms_list,
+        )
 
     def _show_previous_event(self) -> None:
         """Display the previous event in the history."""
         if self._current_event_index is not None and self._current_event_index > 0:
             self._current_event_index -= 1
-            self._window.update_capture(self._history[self._current_event_index])
+            self._update_window_capture(self._history[self._current_event_index])
             self._refresh_status()
 
     def _show_next_event(self) -> None:
@@ -290,7 +318,7 @@ class QuattrocentoController(QtCore.QObject):
         if self._current_event_index >= len(self._history) - 1:
             return
         self._current_event_index += 1
-        self._window.update_capture(self._history[self._current_event_index])
+        self._update_window_capture(self._history[self._current_event_index])
         self._refresh_status()
 
     def _refresh_status(self) -> None:

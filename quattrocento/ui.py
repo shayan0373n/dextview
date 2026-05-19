@@ -5,17 +5,9 @@ import numpy as np
 import pyqtgraph as pg
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import Qt
-from scipy.signal import sosfiltfilt
+from scipy.signal import butter, iirnotch, sosfiltfilt, tf2sos
 
-from .models import CapturedWindow
-from .processing import (
-    EMG_BANDPASS_HIGH_HZ,
-    EMG_BANDPASS_LOW_HZ,
-    EMG_NOTCH_HZ,
-    design_emg_bandpass,
-    design_emg_notch,
-    detect_onset,
-)
+from dataclasses import dataclass
 
 
 _RAW_GRID_COLUMNS = 5
@@ -23,6 +15,48 @@ _MONITOR_ROLLING_SECONDS = 5.0
 _LIVE_MONITOR_ROLLING_SECONDS = 10.0
 _LIVE_MONITOR_GRID_COLUMNS = 5
 _EXPECTED_FINGER_COUNT = 10
+
+# Display-only EMG filters. Visualization concern, not domain processing —
+# no hook, capture, or detector touches them.
+_EMG_BANDPASS_LOW_HZ: float = 10.0
+_EMG_BANDPASS_HIGH_HZ: float = 500.0
+_EMG_BANDPASS_ORDER: int = 4
+_EMG_NOTCH_HZ: float = 50.0
+_EMG_NOTCH_Q: float = 30.0
+_EMG_NOTCH_HARMONICS: tuple[int, ...] = (1, 2, 3)
+
+_EMG_BANDPASS_LABEL = f"{_EMG_BANDPASS_LOW_HZ:.0f}–{_EMG_BANDPASS_HIGH_HZ:.0f} Hz"
+_EMG_NOTCH_LABEL = f"{_EMG_NOTCH_HZ:.0f} Hz"
+
+
+def _design_emg_bandpass(sample_rate_hz: int) -> np.ndarray | None:
+    """SOS for a Butterworth bandpass at the module's EMG cutoffs. None if
+    Nyquist does not exceed the high cutoff."""
+    nyquist = sample_rate_hz / 2.0
+    if nyquist <= _EMG_BANDPASS_HIGH_HZ:
+        return None
+    return butter(
+        _EMG_BANDPASS_ORDER,
+        [_EMG_BANDPASS_LOW_HZ / nyquist, _EMG_BANDPASS_HIGH_HZ / nyquist],
+        btype="band",
+        output="sos",
+    )
+
+
+def _design_emg_notch(sample_rate_hz: int) -> np.ndarray | None:
+    """Cascaded SOS notches at _EMG_NOTCH_HZ and its harmonics below Nyquist.
+    None if no harmonic is representable."""
+    nyquist = sample_rate_hz / 2.0
+    sections: list[np.ndarray] = []
+    for harmonic in _EMG_NOTCH_HARMONICS:
+        freq = _EMG_NOTCH_HZ * harmonic
+        if freq >= nyquist:
+            continue
+        b, a = iirnotch(freq / nyquist, Q=_EMG_NOTCH_Q)
+        sections.append(tf2sos(b, a))
+    if not sections:
+        return None
+    return np.vstack(sections)
 
 # Peak-force bins used to color the per-finger max marker and the legend.
 _MVC_COLOR_BINS: tuple[tuple[float, str, str], ...] = (
@@ -105,6 +139,20 @@ def _build_mirrored_bar_layout(
 
     identity = tuple(range(len(finger_labels)))
     return identity, tuple(finger_labels)
+
+
+@dataclass(slots=True, frozen=True)
+class _CaptureState:
+    """Internal UI-only snapshot of capture data."""
+    timestamps: np.ndarray
+    signals: np.ndarray
+    trigger_sample: int
+    baseline: np.ndarray | None
+    peak: np.ndarray | None
+    empty: np.ndarray | None
+    sample_rate_hz: int
+    # Optional onset/p2p results computed upstream or cached here
+    onset_ms_list: list[float | None] | None = None
 
 
 class TriggerMonitorWindow(QtWidgets.QWidget):
@@ -289,8 +337,8 @@ class RollingChannelMonitor(QtWidgets.QWidget):
         self._filled = 0
         self._manual_y: list[bool] = [False] * n_ch
 
-        self._filter_sos = design_emg_bandpass(sample_rate_hz) if show_filters else None
-        self._notch_sos = design_emg_notch(sample_rate_hz) if show_filters else None
+        self._filter_sos = _design_emg_bandpass(sample_rate_hz) if show_filters else None
+        self._notch_sos = _design_emg_notch(sample_rate_hz) if show_filters else None
         self._filter_enabled = False
         self._notch_enabled = False
 
@@ -311,7 +359,7 @@ class RollingChannelMonitor(QtWidgets.QWidget):
         toolbar.addWidget(self._reset_y_button)
         if show_filters:
             self._filter_button = QtWidgets.QPushButton(
-                f"Bandpass {EMG_BANDPASS_LOW_HZ:.0f}–{EMG_BANDPASS_HIGH_HZ:.0f} Hz"
+                f"Bandpass {_EMG_BANDPASS_LABEL}"
             )
             self._filter_button.setObjectName("filterButton")
             self._filter_button.setCheckable(True)
@@ -320,7 +368,7 @@ class RollingChannelMonitor(QtWidgets.QWidget):
             toolbar.addWidget(self._filter_button)
 
             self._notch_button = QtWidgets.QPushButton(
-                f"Notch {EMG_NOTCH_HZ:.0f} Hz + harmonics"
+                f"Notch {_EMG_NOTCH_LABEL} + harmonics"
             )
             self._notch_button.setObjectName("notchButton")
             self._notch_button.setCheckable(True)
@@ -488,10 +536,10 @@ class EmgMonitorWindow(QtWidgets.QWidget):
         self._sample_rate_hz = sample_rate_hz
         self._global_scale: bool = True
         self._post_skip_ms: float = 0.0
-        self._last_capture: CapturedWindow | None = None
-        self._filter_sos = design_emg_bandpass(sample_rate_hz)
+        self._last_capture: _CaptureState | None = None
+        self._filter_sos = _design_emg_bandpass(sample_rate_hz)
         self._filter_enabled: bool = False
-        self._notch_sos = design_emg_notch(sample_rate_hz)
+        self._notch_sos = _design_emg_notch(sample_rate_hz)
         self._notch_enabled: bool = False
 
         self._plot_widgets: list[pg.PlotWidget] = []
@@ -513,38 +561,38 @@ class EmgMonitorWindow(QtWidgets.QWidget):
         toolbar.addWidget(self._scale_button)
 
         self._filter_button = QtWidgets.QPushButton(
-            f"Bandpass {EMG_BANDPASS_LOW_HZ:.0f}–{EMG_BANDPASS_HIGH_HZ:.0f} Hz"
+            f"Bandpass {_EMG_BANDPASS_LABEL}"
         )
         self._filter_button.setObjectName("filterButton")
         self._filter_button.setCheckable(True)
         if self._filter_sos is None:
             self._filter_button.setEnabled(False)
             self._filter_button.setToolTip(
-                f"Sample rate {sample_rate_hz} Hz is too low for a "
-                f"{EMG_BANDPASS_HIGH_HZ:.0f} Hz upper cutoff."
+                f"Sample rate {sample_rate_hz} Hz is too low for the "
+                f"configured {_EMG_BANDPASS_LABEL} bandpass."
             )
         else:
             self._filter_button.setToolTip(
                 f"Zero-phase 4th-order Butterworth bandpass "
-                f"({EMG_BANDPASS_LOW_HZ:.0f}–{EMG_BANDPASS_HIGH_HZ:.0f} Hz)."
+                f"({_EMG_BANDPASS_LABEL})."
             )
         self._filter_button.toggled.connect(self._on_filter_toggled)
         toolbar.addWidget(self._filter_button)
 
         self._notch_button = QtWidgets.QPushButton(
-            f"Notch {EMG_NOTCH_HZ:.0f} Hz + harmonics"
+            f"Notch {_EMG_NOTCH_LABEL} + harmonics"
         )
         self._notch_button.setObjectName("notchButton")
         self._notch_button.setCheckable(True)
         if self._notch_sos is None:
             self._notch_button.setEnabled(False)
             self._notch_button.setToolTip(
-                f"Sample rate {sample_rate_hz} Hz is too low for a "
-                f"{EMG_NOTCH_HZ:.0f} Hz notch."
+                f"Sample rate {sample_rate_hz} Hz is too low for the "
+                f"configured {_EMG_NOTCH_LABEL} notch."
             )
         else:
             self._notch_button.setToolTip(
-                f"Zero-phase IIR notch at {EMG_NOTCH_HZ:.0f} Hz and harmonics "
+                f"Zero-phase IIR notch at {_EMG_NOTCH_LABEL} and harmonics "
                 f"present below Nyquist ({sample_rate_hz / 2:.0f} Hz)."
             )
         self._notch_button.toggled.connect(self._on_notch_toggled)
@@ -654,42 +702,83 @@ class EmgMonitorWindow(QtWidgets.QWidget):
         self._global_scale = not checked
         self._scale_button.setText("Per Channel Scale" if checked else "Global Scale")
         if self._last_capture is not None:
-            self.update_capture(self._last_capture)
+            c = self._last_capture
+            self.update_capture(
+                timestamps=c.timestamps,
+                signals=c.signals,
+                trigger_sample=c.trigger_sample,
+                sample_rate_hz=c.sample_rate_hz,
+                onset_ms_list=c.onset_ms_list or [],
+            )
 
     def _on_skip_changed(self, value: float) -> None:
         """Updates the artifact pre-skip duration and refreshes the current view."""
         self._post_skip_ms = float(value)
         if self._last_capture is not None:
-            self.update_capture(self._last_capture)
+            c = self._last_capture
+            self.update_capture(
+                timestamps=c.timestamps,
+                signals=c.signals,
+                trigger_sample=c.trigger_sample,
+                sample_rate_hz=c.sample_rate_hz,
+                onset_ms_list=c.onset_ms_list or [],
+            )
 
     def _on_filter_toggled(self, checked: bool) -> None:
         """Enables or disables the EMG bandpass and refreshes the current view."""
         self._filter_enabled = checked
         if self._last_capture is not None:
-            self.update_capture(self._last_capture)
+            c = self._last_capture
+            self.update_capture(
+                timestamps=c.timestamps,
+                signals=c.signals,
+                trigger_sample=c.trigger_sample,
+                sample_rate_hz=c.sample_rate_hz,
+                onset_ms_list=c.onset_ms_list or [],
+            )
 
     def _on_notch_toggled(self, checked: bool) -> None:
         """Enables or disables the power-line notch and refreshes the current view."""
         self._notch_enabled = checked
         if self._last_capture is not None:
-            self.update_capture(self._last_capture)
+            c = self._last_capture
+            self.update_capture(
+                timestamps=c.timestamps,
+                signals=c.signals,
+                trigger_sample=c.trigger_sample,
+                sample_rate_hz=c.sample_rate_hz,
+                onset_ms_list=c.onset_ms_list or [],
+            )
 
-    def update_capture(self, captured: CapturedWindow) -> None:
-        """Updates the EMG panels with data from a new CapturedWindow."""
-        self._last_capture = captured
+    def update_capture(
+        self,
+        timestamps: np.ndarray,
+        signals: np.ndarray,
+        trigger_sample: int,
+        sample_rate_hz: int,
+        onset_ms_list: list[float | None],
+    ) -> None:
+        """Updates the EMG panels with data from a new capture."""
+        self._last_capture = _CaptureState(
+            timestamps=timestamps,
+            signals=signals,
+            trigger_sample=trigger_sample,
+            baseline=None,
+            peak=None,
+            empty=None,
+            sample_rate_hz=sample_rate_hz,
+            onset_ms_list=onset_ms_list,
+        )
         if not self._plot_widgets:
             return
 
-        sig = captured.batch.signals
-        relative_time = (
-            captured.batch.timestamps
-            - captured.batch.timestamps[captured.trigger_sample]
-        )
+        sig = signals
+        relative_time = timestamps - timestamps[trigger_sample]
 
         skip_samples = max(
             0, int(round(self._post_skip_ms / 1000.0 * self._sample_rate_hz))
         )
-        measure_start = captured.trigger_sample + skip_samples
+        measure_start = trigger_sample + skip_samples
         skip_seconds = self._post_skip_ms / 1000.0
         for region in self._skip_regions:
             if skip_samples > 0:
@@ -712,12 +801,7 @@ class EmgMonitorWindow(QtWidgets.QWidget):
             emg_columns.append(emg)
             curve.setData(relative_time, emg)
 
-            onset_ms = detect_onset(
-                emg,
-                captured.trigger_sample,
-                self._sample_rate_hz,
-                post_skip_samples=skip_samples,
-            )
+            onset_ms = onset_ms_list[local_idx]
             onset_line = self._onset_lines[local_idx]
             if onset_ms is not None:
                 onset_line.setPos(onset_ms / 1000.0)
@@ -861,14 +945,13 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._mvc_ref_lines: list[pg.InfiniteLine] = []
         self._zero_ref_lines: list[pg.InfiniteLine] = []
         self._rest_ref_lines: list[pg.InfiniteLine] = []
-        self._previous_shortcut: QtWidgets.QShortcut | None = None
         self._next_shortcut: QtWidgets.QShortcut | None = None
         self._sample_rate_hz = sample_rate_hz
         self._global_scale: bool = True
         self._show_mvc: bool = True
         self._show_rest_ref: bool = False
         self._show_zero_ref: bool = False
-        self._last_capture: CapturedWindow | None = None
+        self._last_capture: _CaptureState | None = None
         self._finger_info_labels: list[QtWidgets.QLabel] = []
         self._onset_lines: list[_OnsetLine] = []
         self._auto_onset_ms: list[float | None] = [None] * _EXPECTED_FINGER_COUNT
@@ -1528,25 +1611,65 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._show_mvc = not checked
         self._display_mode_button.setText("Raw" if checked else "% MVC")
         if self._last_capture is not None:
-            self.update_capture(self._last_capture)
+            c = self._last_capture
+            self.update_capture(
+                timestamps=c.timestamps,
+                signals=c.signals,
+                trigger_sample=c.trigger_sample,
+                sample_rate_hz=c.sample_rate_hz,
+                baseline=c.baseline,
+                peak=c.peak,
+                empty=c.empty,
+                onset_ms_list=c.onset_ms_list or [],
+            )
 
     def _on_pretrigger_baseline_toggled(self, checked: bool) -> None:
         """Toggles using the pre-trigger window of each event as its display baseline."""
         self._use_pretrigger_baseline = checked
         if self._last_capture is not None:
-            self.update_capture(self._last_capture)
+            c = self._last_capture
+            self.update_capture(
+                timestamps=c.timestamps,
+                signals=c.signals,
+                trigger_sample=c.trigger_sample,
+                sample_rate_hz=c.sample_rate_hz,
+                baseline=c.baseline,
+                peak=c.peak,
+                empty=c.empty,
+                onset_ms_list=c.onset_ms_list or [],
+            )
 
     def _on_rest_line_toggled(self, checked: bool) -> None:
         """Toggles the rest baseline reference line on the per-finger plots."""
         self._show_rest_ref = checked
         if self._last_capture is not None:
-            self.update_capture(self._last_capture)
+            c = self._last_capture
+            self.update_capture(
+                timestamps=c.timestamps,
+                signals=c.signals,
+                trigger_sample=c.trigger_sample,
+                sample_rate_hz=c.sample_rate_hz,
+                baseline=c.baseline,
+                peak=c.peak,
+                empty=c.empty,
+                onset_ms_list=c.onset_ms_list or [],
+            )
 
     def _on_zero_line_toggled(self, checked: bool) -> None:
         """Toggles the zero (no-contact) reference line on the per-finger plots."""
         self._show_zero_ref = checked
         if self._last_capture is not None:
-            self.update_capture(self._last_capture)
+            c = self._last_capture
+            self.update_capture(
+                timestamps=c.timestamps,
+                signals=c.signals,
+                trigger_sample=c.trigger_sample,
+                sample_rate_hz=c.sample_rate_hz,
+                baseline=c.baseline,
+                peak=c.peak,
+                empty=c.empty,
+                onset_ms_list=c.onset_ms_list or [],
+            )
 
     def _on_scale_toggled(self, checked: bool) -> None:
         """Toggles between global and per-finger Y-axis scaling."""
@@ -1554,7 +1677,17 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._scale_button.setText("Per Finger Scale" if checked else "Global Scale")
         self._set_per_finger_axes(per_finger=not self._global_scale)
         if self._last_capture is not None:
-            self.update_capture(self._last_capture)
+            c = self._last_capture
+            self.update_capture(
+                timestamps=c.timestamps,
+                signals=c.signals,
+                trigger_sample=c.trigger_sample,
+                sample_rate_hz=c.sample_rate_hz,
+                baseline=c.baseline,
+                peak=c.peak,
+                empty=c.empty,
+                onset_ms_list=c.onset_ms_list or [],
+            )
 
     def _set_per_finger_axes(self, *, per_finger: bool) -> None:
         """Show or hide Y-axis tick values on non-first-column panels."""
@@ -1569,45 +1702,63 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
                 axis.setWidth(0)
                 axis.setStyle(showValues=False)
 
-    def update_capture(self, captured: CapturedWindow) -> None:
+    def update_capture(
+        self,
+        timestamps: np.ndarray,
+        signals: np.ndarray,
+        trigger_sample: int,
+        sample_rate_hz: int,
+        baseline: np.ndarray | None,
+        peak: np.ndarray | None,
+        empty: np.ndarray | None,
+        onset_ms_list: list[float | None],
+    ) -> None:
         """Render one captured event in both plots."""
-        self._last_capture = captured
-        sig = captured.batch.signals
+        self._last_capture = _CaptureState(
+            timestamps=timestamps,
+            signals=signals,
+            trigger_sample=trigger_sample,
+            baseline=baseline,
+            peak=peak,
+            empty=empty,
+            sample_rate_hz=sample_rate_hz,
+            onset_ms_list=onset_ms_list,
+        )
+        sig = signals
 
         if self._use_pretrigger_baseline:
-            end = max(captured.trigger_sample, 1)
-            baseline: np.ndarray | None = np.mean(captured.batch.signals[:end, :], axis=0)
+            end = max(trigger_sample, 1)
+            display_baseline: np.ndarray | None = np.mean(signals[:end, :], axis=0)
         else:
-            baseline = captured.meta.baseline
+            display_baseline = baseline
 
-        has_cal = baseline is not None and captured.meta.peak is not None
-        empty = captured.meta.empty
+        has_cal = display_baseline is not None and peak is not None
         zero_positions: np.ndarray | None = None  # per-channel zero ref in display units
 
         # % MVC mode: normalize signals; Raw mode: normalize by global max MVC span if
         # calibrated, otherwise subtract baseline or show raw.
         raw_mvc_span: float | None = None  # global max span used for raw-mode ref lines
         if self._show_mvc and has_cal:
-            span = captured.meta.peak - baseline
+            span = peak - display_baseline
             safe_span = np.where(span != 0, span, 1.0)
-            sig = (sig - baseline) / safe_span * 100.0
+            sig = (sig - display_baseline) / safe_span * 100.0
             unit = "% MVC"
             if empty is not None:
-                zero_positions = (empty - baseline) / safe_span * 100.0
+                zero_positions = (empty - display_baseline) / safe_span * 100.0
         else:
             if has_cal:
-                span = captured.meta.peak - baseline
+                span = peak - display_baseline
                 max_span = float(np.max(span[self._finger_channel_indices]))
                 raw_mvc_span = max_span if max_span != 0 else 1.0
-                sig = (sig - baseline) / raw_mvc_span * 100.0
+                sig = (sig - display_baseline) / raw_mvc_span * 100.0
                 unit = "% max MVC"
                 if empty is not None:
-                    zero_positions = (empty - baseline) / raw_mvc_span * 100.0
-            elif baseline is not None:
-                sig = sig - baseline
+                    zero_positions = (empty - display_baseline) / raw_mvc_span * 100.0
+            elif display_baseline is not None:
+                sig = sig - display_baseline
                 unit = "a.u."
                 if empty is not None:
-                    zero_positions = empty - baseline
+                    zero_positions = empty - display_baseline
             else:
                 unit = "a.u."
                 if empty is not None:
@@ -1615,8 +1766,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._apply_unit_labels(unit)
 
         relative_time = (
-            captured.batch.timestamps
-            - captured.batch.timestamps[captured.trigger_sample]
+            timestamps - timestamps[trigger_sample]
         )
 
         for local_idx, curve in enumerate(self._raw_curves):
@@ -1639,7 +1789,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             show_ref = not self._show_mvc and has_cal
             peak_ref.setVisible(show_ref)
             if show_ref and raw_mvc_span is not None:
-                finger_span = float(captured.meta.peak[ch_idx] - baseline[ch_idx])
+                finger_span = float(peak[ch_idx] - display_baseline[ch_idx])
                 peak_ref.setPos(finger_span / raw_mvc_span * 100.0)
 
             # Zero (no-contact) reference line.
@@ -1652,11 +1802,11 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
 
             # Rest (baseline) reference line — always at 0 in display units.
             rest_ref = self._rest_ref_lines[local_idx]
-            rest_ref.setVisible(self._show_rest_ref and baseline is not None)
+            rest_ref.setVisible(self._show_rest_ref and display_baseline is not None)
 
             # P2P and onset overlay.
             p2p = float(np.ptp(force_data)) if force_data.size > 0 else 0.0
-            onset_ms = detect_onset(force_data, captured.trigger_sample, self._sample_rate_hz)
+            onset_ms = onset_ms_list[local_idx]
             self._auto_onset_ms[local_idx] = onset_ms
             onset_line = self._onset_lines[local_idx]
             if onset_ms is not None:
@@ -1716,7 +1866,13 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             panel.viewport().update()
 
         if self._emg_window is not None:
-            self._emg_window.update_capture(captured)
+            self._emg_window.update_capture(
+                timestamps=timestamps,
+                signals=signals,
+                trigger_sample=trigger_sample,
+                sample_rate_hz=sample_rate_hz,
+                onset_ms_list=onset_ms_list,
+            )
 
     def _on_onset_dragged(self, finger_idx: int, pos_seconds: float) -> None:
         """Updates the info label when a user manually drags an onset marker."""
