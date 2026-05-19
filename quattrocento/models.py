@@ -81,7 +81,6 @@ class _Hook(Protocol):
     """Shared interface for all hooks registered with the controller."""
 
     name: str
-    ui_controls: bool
 
     def set_active(self, active: bool) -> None:
         """Enable or disable the hook."""

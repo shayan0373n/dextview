@@ -9,6 +9,7 @@ from PyQt5 import QtCore, QtWidgets
 from .capture_log import CaptureLogger
 from .channels import load_channels
 from .hooks import HoldInTargetAnyFinger, PassedThresholdAnyFinger
+from .hooks.logic import _LabJackPulse
 from .config import QuattrocentoConfig
 from .controller import QuattrocentoController
 from .models import StreamMeta
@@ -359,6 +360,7 @@ def main(argv: list[str] | None = None) -> int:
         stream, meta = _build_proxy_stream(args, channel_labels, channel_scales)
 
     processor = TriggerWindowProcessor(stream.config)
+
     window = QuattrocentoMainWindow(
         channel_labels=channel_labels,
         trigger_channel=stream.config.trigger_channel,
@@ -367,20 +369,23 @@ def main(argv: list[str] | None = None) -> int:
         emg_channels=emg_channels,
     )
     event_hooks = [CaptureLogger(args.log_dir)] if args.log_dir else []
+    pulse = _LabJackPulse()
+    threshold_hook = PassedThresholdAnyFinger(finger_indices=finger_indices, pulse=pulse)
+    hold_hook = HoldInTargetAnyFinger(finger_indices=finger_indices, pulse=pulse)
     controller = QuattrocentoController(
         stream.config, stream, processor, window, meta,
-        stream_hooks=[
-            PassedThresholdAnyFinger(finger_indices=finger_indices),
-            HoldInTargetAnyFinger(finger_indices=finger_indices),
-        ],
+        stream_hooks=[threshold_hook, hold_hook],
         event_hooks=event_hooks,
     )
     controller.start()
+    window.add_hook_toggle("Any Finger Threshold", threshold_hook.set_active)
+    window.add_hook_toggle("Hold In Target", hold_hook.set_active)
 
     try:
         return qt_app.exec_()
     finally:
         stream.close()
+        pulse.close()
 
 
 if __name__ == "__main__":

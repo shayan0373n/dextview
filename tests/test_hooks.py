@@ -4,12 +4,8 @@ from unittest.mock import MagicMock
 import numpy as np
 
 from quattrocento.config import QuattrocentoConfig
-from quattrocento.hooks import (
-    HoldInTargetAnyFinger,
-    PassedThresholdAnyFinger,
-    _HoldInBandDetector,
-    _RampOnsetDetector,
-)
+from quattrocento.hooks import HoldInTargetAnyFinger, PassedThresholdAnyFinger
+from quattrocento.hooks.logic import _HoldInBandDetector, _RampOnsetDetector
 from quattrocento.models import DataBatch, StreamMeta
 
 
@@ -31,6 +27,7 @@ def _detector(
 
 def _hook(**kwargs) -> PassedThresholdAnyFinger:
     kwargs.setdefault("finger_indices", [0])
+    kwargs.setdefault("pulse", MagicMock())
     h = PassedThresholdAnyFinger(**kwargs)
     h._hw = MagicMock()
     h._meter = MagicMock()
@@ -235,7 +232,7 @@ class OnsetDetectorSetThresholdTests(unittest.TestCase):
 
 class CompositorInactiveTests(unittest.TestCase):
     def test_inactive_hook_does_not_touch_hw(self) -> None:
-        h = PassedThresholdAnyFinger(finger_indices=[0])
+        h = PassedThresholdAnyFinger(finger_indices=[0], pulse=MagicMock())
         h._hw = MagicMock()
         h._meter = MagicMock()
         h(_batch([5.0, 15.0], [0.0, 1.0]), _meta())
@@ -452,6 +449,7 @@ class HoldDetectorSetTargetTests(unittest.TestCase):
 
 def _hold_hook(**kwargs) -> HoldInTargetAnyFinger:
     kwargs.setdefault("finger_indices", [0])
+    kwargs.setdefault("pulse", MagicMock())
     h = HoldInTargetAnyFinger(**kwargs)
     h._hw = MagicMock()
     h._meter = MagicMock()

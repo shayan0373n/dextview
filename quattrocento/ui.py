@@ -854,6 +854,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._pretrigger_baseline_button.setCheckable(True)
         self._use_pretrigger_baseline: bool = False
         self._hook_controls_layout: QtWidgets.QHBoxLayout | None = None
+        self._hooks_menu_button: QtWidgets.QToolButton | None = None
         self._raw_plot_widgets: list[pg.PlotWidget] = []
         self._raw_curves: list[pg.PlotDataItem] = []
         self._raw_max_markers: list[pg.PlotDataItem] = []
@@ -1393,73 +1394,20 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         if self._trigger_monitor.isVisible():
             self._trigger_monitor.mark_trigger(t)
 
-    def add_hook_controls(
-        self,
-        name: str,
-        *,
-        on_toggle: Callable[[bool], None],
-        on_reset: Callable[[], None],
-    ) -> None:
-        """Adds a toggle + reset button pair for the named hook to the toolbar."""
-        toggle_btn = QtWidgets.QPushButton(name)
-        toggle_btn.setObjectName("hookToggle")
-        toggle_btn.setCheckable(True)
-        toggle_btn.toggled.connect(on_toggle)
-
-        reset_btn = QtWidgets.QPushButton("Reset")
-        reset_btn.clicked.connect(on_reset)
-
-        self._hook_controls_layout.addWidget(toggle_btn)
-        self._hook_controls_layout.addWidget(reset_btn)
-
-    def add_rtms_controls(
-        self,
-        items: Sequence[tuple[str, Callable[[bool], None], Callable[[], None]]],
-    ) -> None:
-        """Adds the rTMS menu button to the toolbar. `items` is a sequence of
-        (name, set_active, reset). The menu's checkable entries are mutually
-        exclusive: enabling one disables the other; clicking the active entry
-        turns it off. Reset acts on whichever entry is currently active."""
-        menu = QtWidgets.QMenu(self)
-        actions: list[tuple[QtWidgets.QAction, Callable[[bool], None], Callable[[], None]]] = []
-
-        for name, set_active, reset in items:
-            action = QtWidgets.QAction(name, self)
-            action.setCheckable(True)
-            actions.append((action, set_active, reset))
-            menu.addAction(action)
-
-        def _make_handler(idx: int) -> Callable[[bool], None]:
-            def _handler(checked: bool) -> None:
-                if checked:
-                    for j, (other, other_set_active, _) in enumerate(actions):
-                        if j != idx and other.isChecked():
-                            other.blockSignals(True)
-                            other.setChecked(False)
-                            other.blockSignals(False)
-                            other_set_active(False)
-                actions[idx][1](checked)
-            return _handler
-
-        for idx, (action, _, _) in enumerate(actions):
-            action.toggled.connect(_make_handler(idx))
-
-        menu.addSeparator()
-        reset_action = QtWidgets.QAction("Reset", self)
-
-        def _on_reset() -> None:
-            for action, _, reset in actions:
-                if action.isChecked():
-                    reset()
-                    return
-        reset_action.triggered.connect(_on_reset)
-        menu.addAction(reset_action)
-
-        button = QtWidgets.QToolButton(self)
-        button.setText("rTMS ▾")
-        button.setMenu(menu)
-        button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
-        self._hook_controls_layout.addWidget(button)
+    def add_hook_toggle(self, name: str, on_toggle: Callable[[bool], None]) -> None:
+        """Append a checkable entry to the 'Hooks ▾' menu. Builds the menu
+        lazily on first call."""
+        if self._hooks_menu_button is None:
+            menu = QtWidgets.QMenu(self)
+            self._hooks_menu_button = QtWidgets.QToolButton(self)
+            self._hooks_menu_button.setText("Hooks ▾")
+            self._hooks_menu_button.setMenu(menu)
+            self._hooks_menu_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+            self._hook_controls_layout.addWidget(self._hooks_menu_button)
+        action = QtWidgets.QAction(name, self)
+        action.setCheckable(True)
+        action.toggled.connect(on_toggle)
+        self._hooks_menu_button.menu().addAction(action)
 
     def _on_save_cal_clicked(self) -> None:
         path, _ = QtWidgets.QFileDialog.getSaveFileName(

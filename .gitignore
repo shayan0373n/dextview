@@ -5,4 +5,6 @@ reports
 todo.md
 logs/
 .claude/
+.antigravitycli/
 *.diff
+artefacts/

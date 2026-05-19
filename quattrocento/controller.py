@@ -1,6 +1,6 @@
 from collections import deque
 from dataclasses import replace
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -54,21 +54,6 @@ class QuattrocentoController(QtCore.QObject):
         self._window.empty_toggled.connect(self._on_empty_toggled)
         self._window.save_calibration_requested.connect(self._on_save_calibration)
         self._window.load_calibration_requested.connect(self._on_load_calibration)
-
-        rtms_items: list[tuple[str, Callable[[bool], None], Callable[[], None]]] = []
-        for hook in (*self._stream_hooks, *self._event_hooks):
-            if not hook.ui_controls:
-                continue
-            if getattr(hook, "group", None) == "rtms":
-                rtms_items.append((hook.name, hook.set_active, hook.reset))
-            else:
-                self._window.add_hook_controls(
-                    hook.name,
-                    on_toggle=hook.set_active,
-                    on_reset=hook.reset,
-                )
-        if rtms_items:
-            self._window.add_rtms_controls(rtms_items)
 
     def start(self) -> None:
         """Starts the stream polling and shows the UI."""
