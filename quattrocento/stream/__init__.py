@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from ..models import Stream
 from .direct import DirectStream
 from .parser import FrameParser

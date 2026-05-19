@@ -1,9 +1,8 @@
-from __future__ import annotations
-
 import logging
 
 import numpy as np
 from numpy.typing import NDArray
+from scipy.signal import butter, iirnotch, tf2sos
 
 from .config import QuattrocentoConfig
 from .models import CapturedWindow, DataBatch, StreamMeta
@@ -13,6 +12,51 @@ logger = logging.getLogger("quattrocento.processing")
 # These thresholds need empirical validation against real EMG/force data.
 _ONSET_SD_MULTIPLIER: float = 5.0   # SD multiples above/below pre-trigger mean
 _ONSET_MIN_CONSECUTIVE: int = 5     # consecutive threshold crossings required
+
+EMG_BANDPASS_LOW_HZ: float = 10.0
+EMG_BANDPASS_HIGH_HZ: float = 500.0
+_EMG_BANDPASS_ORDER: int = 4
+
+EMG_NOTCH_HZ: float = 50.0
+_EMG_NOTCH_Q: float = 30.0
+_EMG_NOTCH_HARMONICS: tuple[int, ...] = (1, 2, 3)
+
+
+def design_emg_bandpass(sample_rate_hz: int) -> NDArray[np.float64] | None:
+    """Return SOS coefficients for a 10–500 Hz Butterworth bandpass.
+
+    Returns None if the sample rate is too low (Nyquist must exceed the high
+    cutoff with margin).
+    """
+    nyquist = sample_rate_hz / 2.0
+    if nyquist <= EMG_BANDPASS_HIGH_HZ:
+        return None
+    return butter(
+        _EMG_BANDPASS_ORDER,
+        [EMG_BANDPASS_LOW_HZ / nyquist, EMG_BANDPASS_HIGH_HZ / nyquist],
+        btype="band",
+        output="sos",
+    )
+
+
+def design_emg_notch(sample_rate_hz: int) -> NDArray[np.float64] | None:
+    """Return cascaded SOS notches at EMG_NOTCH_HZ and its 2nd/3rd harmonics.
+
+    Harmonics at or above Nyquist are skipped. Returns None if no harmonic is
+    representable (sample rate too low).
+    """
+    nyquist = sample_rate_hz / 2.0
+    sections: list[NDArray[np.float64]] = []
+    for harmonic in _EMG_NOTCH_HARMONICS:
+        freq = EMG_NOTCH_HZ * harmonic
+        if freq >= nyquist:
+            continue
+        b, a = iirnotch(freq / nyquist, Q=_EMG_NOTCH_Q)
+        sections.append(tf2sos(b, a))
+    if not sections:
+        return None
+    return np.vstack(sections)
+
 
 
 def detect_onset(

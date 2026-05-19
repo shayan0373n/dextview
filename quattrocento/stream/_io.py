@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import socket
 
 _SOCKET_READ_SIZE = 65536

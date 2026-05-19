@@ -1,19 +1,27 @@
-from __future__ import annotations
-
 from datetime import datetime
-from typing import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 
 import numpy as np
 import pyqtgraph as pg
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtCore import Qt
+from scipy.signal import sosfiltfilt
 
 from .models import CapturedWindow
-from .processing import detect_onset
+from .processing import (
+    EMG_BANDPASS_HIGH_HZ,
+    EMG_BANDPASS_LOW_HZ,
+    EMG_NOTCH_HZ,
+    design_emg_bandpass,
+    design_emg_notch,
+    detect_onset,
+)
 
 
 _RAW_GRID_COLUMNS = 5
 _MONITOR_ROLLING_SECONDS = 5.0
+_LIVE_MONITOR_ROLLING_SECONDS = 10.0
+_LIVE_MONITOR_GRID_COLUMNS = 5
 _EXPECTED_FINGER_COUNT = 10
 
 # Peak-force bins used to color the per-finger max marker and the legend.
@@ -245,12 +253,224 @@ class TriggerMonitorWindow(QtWidgets.QWidget):
         self._trigger_lines.append(line)
 
 
+class RollingChannelMonitor(QtWidgets.QWidget):
+    """Rolling live grid view of multiple channels, raw post-scale values.
+
+    Maintains an N-sample circular buffer per monitored channel and renders
+    each channel in its own panel with independent Y autoscaling. The X
+    axis on every panel is locked to the rolling window ending at the
+    most recently received sample.
+    """
+
+    def __init__(
+        self,
+        channels: Sequence[tuple[int, str]],
+        sample_rate_hz: int,
+        title: str,
+        rolling_seconds: float = _LIVE_MONITOR_ROLLING_SECONDS,
+        grid_columns: int = _LIVE_MONITOR_GRID_COLUMNS,
+        show_filters: bool = False,
+        parent: QtWidgets.QWidget | None = None,
+    ) -> None:
+        super().__init__(parent, QtCore.Qt.Window)
+        self.setWindowTitle(title)
+        self.resize(1100, 520)
+
+        self._channel_indices: list[int] = [idx for idx, _ in channels]
+        self._channel_labels: list[str] = [label for _, label in channels]
+        self._sample_rate_hz = sample_rate_hz
+        self._rolling_seconds = rolling_seconds
+        self._max_samples = max(1, int(sample_rate_hz * rolling_seconds))
+
+        n_ch = len(channels)
+        self._times = np.empty(self._max_samples, dtype=np.float64)
+        self._values = np.empty((self._max_samples, n_ch), dtype=np.float64)
+        self._write_pos = 0
+        self._filled = 0
+        self._manual_y: list[bool] = [False] * n_ch
+
+        self._filter_sos = design_emg_bandpass(sample_rate_hz) if show_filters else None
+        self._notch_sos = design_emg_notch(sample_rate_hz) if show_filters else None
+        self._filter_enabled = False
+        self._notch_enabled = False
+
+        self._plot_widgets: list[pg.PlotWidget] = []
+        self._curves: list[pg.PlotDataItem] = []
+
+        root = QtWidgets.QVBoxLayout(self)
+        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(8)
+
+        toolbar = QtWidgets.QHBoxLayout()
+        toolbar.setSpacing(8)
+        self._reset_y_button = QtWidgets.QPushButton("Reset Auto Y")
+        self._reset_y_button.setToolTip(
+            "Re-enable Y autoscale on all panels (cancels manual mouse-wheel zoom)."
+        )
+        self._reset_y_button.clicked.connect(self._reset_manual_y)
+        toolbar.addWidget(self._reset_y_button)
+        if show_filters:
+            self._filter_button = QtWidgets.QPushButton(
+                f"Bandpass {EMG_BANDPASS_LOW_HZ:.0f}–{EMG_BANDPASS_HIGH_HZ:.0f} Hz"
+            )
+            self._filter_button.setObjectName("filterButton")
+            self._filter_button.setCheckable(True)
+            self._filter_button.setEnabled(self._filter_sos is not None)
+            self._filter_button.toggled.connect(self._on_filter_toggled)
+            toolbar.addWidget(self._filter_button)
+
+            self._notch_button = QtWidgets.QPushButton(
+                f"Notch {EMG_NOTCH_HZ:.0f} Hz + harmonics"
+            )
+            self._notch_button.setObjectName("notchButton")
+            self._notch_button.setCheckable(True)
+            self._notch_button.setEnabled(self._notch_sos is not None)
+            self._notch_button.toggled.connect(self._on_notch_toggled)
+            toolbar.addWidget(self._notch_button)
+        toolbar.addStretch(1)
+        root.addLayout(toolbar)
+
+        grid_container = QtWidgets.QWidget()
+        grid_container.setStyleSheet("background: #D2DDEA;")
+        grid = QtWidgets.QGridLayout(grid_container)
+        grid.setContentsMargins(2, 2, 2, 2)
+        grid.setHorizontalSpacing(2)
+        grid.setVerticalSpacing(2)
+
+        n_cols = max(1, min(grid_columns, n_ch)) if n_ch > 0 else 1
+        n_rows = (n_ch + n_cols - 1) // n_cols if n_ch > 0 else 0
+        last_row = n_rows - 1
+
+        for local_idx, label in enumerate(self._channel_labels):
+            row = local_idx // n_cols
+            col = local_idx % n_cols
+
+            panel = pg.PlotWidget(background="#F4F7FB")
+            panel.setMenuEnabled(False)
+            panel.setMouseEnabled(x=False, y=True)
+            panel.showGrid(x=True, y=True, alpha=0.18)
+            panel.setFrameShape(QtWidgets.QFrame.NoFrame)
+            panel.setTitle(f"<b>{label}</b>", size="14pt", color="#2E3A46")
+            panel.plotItem.titleLabel.item.setTextWidth(-1)
+            panel.getViewBox().sigRangeChangedManually.connect(
+                lambda _mask, i=local_idx: self._on_manual_y_change(i)
+            )
+
+            if row == last_row:
+                panel.getAxis("bottom").setHeight(28)
+                panel.getAxis("bottom").setTickFont(
+                    QtGui.QFont("Segoe UI", 11, QtGui.QFont.Bold)
+                )
+                panel.setLabel("bottom", "Time (s)")
+            else:
+                panel.getAxis("bottom").setHeight(0)
+                panel.getAxis("bottom").setStyle(showValues=False)
+
+            if col == 0:
+                panel.getAxis("left").setWidth(48)
+                panel.setLabel("left", "Signal", units="a.u.")
+            else:
+                panel.getAxis("left").setWidth(0)
+                panel.getAxis("left").setStyle(showValues=False)
+
+            pen = pg.mkPen(FINGER_COLORS[local_idx % len(FINGER_COLORS)], width=1.5)
+            curve = panel.plot([], [], pen=pen)
+
+            self._plot_widgets.append(panel)
+            self._curves.append(curve)
+            grid.addWidget(panel, row, col)
+
+        if self._plot_widgets:
+            reference = self._plot_widgets[0]
+            for panel in self._plot_widgets[1:]:
+                panel.setXLink(reference)
+
+        root.addWidget(grid_container, stretch=1)
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        """Rejects the close event and hides the window instead."""
+        self.hide()
+        event.ignore()
+
+    def push_batch(self, timestamps: np.ndarray, signals: np.ndarray) -> None:
+        """Appends a batch into the rolling buffer and refreshes all curves."""
+        n = len(timestamps)
+        if n == 0 or not self._plot_widgets:
+            return
+
+        selected = signals[:, self._channel_indices]
+
+        end = self._write_pos + n
+        if end <= self._max_samples:
+            self._times[self._write_pos:end] = timestamps
+            self._values[self._write_pos:end, :] = selected
+        else:
+            first = self._max_samples - self._write_pos
+            self._times[self._write_pos:] = timestamps[:first]
+            self._values[self._write_pos:, :] = selected[:first, :]
+            rest = n - first
+            self._times[:rest] = timestamps[first:]
+            self._values[:rest, :] = selected[first:, :]
+        self._write_pos = end % self._max_samples
+        self._filled = min(self._max_samples, self._filled + n)
+
+        if self._filled < self._max_samples:
+            t_out = self._times[:self._filled]
+            v_out = self._values[:self._filled, :]
+        else:
+            rp = self._write_pos
+            t_out = np.concatenate((self._times[rp:], self._times[:rp]))
+            v_out = np.concatenate(
+                (self._values[rp:, :], self._values[:rp, :]), axis=0
+            )
+
+        if self._filter_enabled and self._filter_sos is not None:
+            v_out = sosfiltfilt(self._filter_sos, v_out, axis=0)
+        if self._notch_enabled and self._notch_sos is not None:
+            v_out = sosfiltfilt(self._notch_sos, v_out, axis=0)
+
+        if t_out.size == 0:
+            return
+
+        t_now = float(t_out[-1])
+        x_min = t_now - self._rolling_seconds
+        x_max = t_now
+
+        for local_idx, curve in enumerate(self._curves):
+            col = v_out[:, local_idx]
+            curve.setData(t_out, col)
+            panel = self._plot_widgets[local_idx]
+            panel.setXRange(x_min, x_max, padding=0.0)
+            if self._manual_y[local_idx]:
+                continue
+            c_min = float(np.min(col))
+            c_max = float(np.max(col))
+            span = c_max - c_min
+            pad = max(0.01, span * 0.08) if span > 0 else 0.5
+            panel.setYRange(c_min - pad, c_max + pad, padding=0.0)
+
+    def _on_filter_toggled(self, checked: bool) -> None:
+        self._filter_enabled = checked
+
+    def _on_notch_toggled(self, checked: bool) -> None:
+        self._notch_enabled = checked
+
+    def _on_manual_y_change(self, local_idx: int) -> None:
+        """Marks a panel as user-zoomed so push_batch stops autoscaling its Y axis."""
+        self._manual_y[local_idx] = True
+
+    def _reset_manual_y(self) -> None:
+        """Re-enables Y autoscale on every panel by clearing the manual-zoom flags."""
+        for i in range(len(self._manual_y)):
+            self._manual_y[i] = False
+
+
 class EmgMonitorWindow(QtWidgets.QWidget):
-    """Per-event view of rectified EMG channels with P2P and onset overlays.
+    """Per-event view of EMG channels with P2P and onset overlays.
 
     Receives the same CapturedWindow as the main finger view, but renders
-    only the channels declared `kind = "emg"` in the channels TOML, after
-    rectification. No baseline/MVC — values are |scaled signal|.
+    only the channels declared `kind = "emg"` in the channels TOML. No
+    baseline/MVC normalization — values are the scaled signal as captured.
     """
 
     def __init__(
@@ -269,6 +489,10 @@ class EmgMonitorWindow(QtWidgets.QWidget):
         self._global_scale: bool = True
         self._post_skip_ms: float = 0.0
         self._last_capture: CapturedWindow | None = None
+        self._filter_sos = design_emg_bandpass(sample_rate_hz)
+        self._filter_enabled: bool = False
+        self._notch_sos = design_emg_notch(sample_rate_hz)
+        self._notch_enabled: bool = False
 
         self._plot_widgets: list[pg.PlotWidget] = []
         self._curves: list[pg.PlotDataItem] = []
@@ -287,6 +511,44 @@ class EmgMonitorWindow(QtWidgets.QWidget):
         self._scale_button.setCheckable(True)
         self._scale_button.toggled.connect(self._on_scale_toggled)
         toolbar.addWidget(self._scale_button)
+
+        self._filter_button = QtWidgets.QPushButton(
+            f"Bandpass {EMG_BANDPASS_LOW_HZ:.0f}–{EMG_BANDPASS_HIGH_HZ:.0f} Hz"
+        )
+        self._filter_button.setObjectName("filterButton")
+        self._filter_button.setCheckable(True)
+        if self._filter_sos is None:
+            self._filter_button.setEnabled(False)
+            self._filter_button.setToolTip(
+                f"Sample rate {sample_rate_hz} Hz is too low for a "
+                f"{EMG_BANDPASS_HIGH_HZ:.0f} Hz upper cutoff."
+            )
+        else:
+            self._filter_button.setToolTip(
+                f"Zero-phase 4th-order Butterworth bandpass "
+                f"({EMG_BANDPASS_LOW_HZ:.0f}–{EMG_BANDPASS_HIGH_HZ:.0f} Hz)."
+            )
+        self._filter_button.toggled.connect(self._on_filter_toggled)
+        toolbar.addWidget(self._filter_button)
+
+        self._notch_button = QtWidgets.QPushButton(
+            f"Notch {EMG_NOTCH_HZ:.0f} Hz + harmonics"
+        )
+        self._notch_button.setObjectName("notchButton")
+        self._notch_button.setCheckable(True)
+        if self._notch_sos is None:
+            self._notch_button.setEnabled(False)
+            self._notch_button.setToolTip(
+                f"Sample rate {sample_rate_hz} Hz is too low for a "
+                f"{EMG_NOTCH_HZ:.0f} Hz notch."
+            )
+        else:
+            self._notch_button.setToolTip(
+                f"Zero-phase IIR notch at {EMG_NOTCH_HZ:.0f} Hz and harmonics "
+                f"present below Nyquist ({sample_rate_hz / 2:.0f} Hz)."
+            )
+        self._notch_button.toggled.connect(self._on_notch_toggled)
+        toolbar.addWidget(self._notch_button)
 
         skip_label = QtWidgets.QLabel("Skip after trigger (ms):")
         skip_label.setStyleSheet("color: #334155; font-size: 12px; font-weight: 600;")
@@ -400,6 +662,18 @@ class EmgMonitorWindow(QtWidgets.QWidget):
         if self._last_capture is not None:
             self.update_capture(self._last_capture)
 
+    def _on_filter_toggled(self, checked: bool) -> None:
+        """Enables or disables the EMG bandpass and refreshes the current view."""
+        self._filter_enabled = checked
+        if self._last_capture is not None:
+            self.update_capture(self._last_capture)
+
+    def _on_notch_toggled(self, checked: bool) -> None:
+        """Enables or disables the power-line notch and refreshes the current view."""
+        self._notch_enabled = checked
+        if self._last_capture is not None:
+            self.update_capture(self._last_capture)
+
     def update_capture(self, captured: CapturedWindow) -> None:
         """Updates the EMG panels with data from a new CapturedWindow."""
         self._last_capture = captured
@@ -424,10 +698,17 @@ class EmgMonitorWindow(QtWidgets.QWidget):
             else:
                 region.setVisible(False)
 
+        bandpass_active = self._filter_enabled and self._filter_sos is not None
+        notch_active = self._notch_enabled and self._notch_sos is not None
+
         emg_columns: list[np.ndarray] = []
         for local_idx, curve in enumerate(self._curves):
             ch_idx = self._channel_indices[local_idx]
             emg = sig[:, ch_idx]
+            if bandpass_active:
+                emg = sosfiltfilt(self._filter_sos, emg, axis=0)
+            if notch_active:
+                emg = sosfiltfilt(self._notch_sos, emg, axis=0)
             emg_columns.append(emg)
             curve.setData(relative_time, emg)
 
@@ -503,6 +784,9 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
     next_requested = QtCore.pyqtSignal()
     baseline_toggled = QtCore.pyqtSignal(bool)
     peak_toggled = QtCore.pyqtSignal(bool)
+    empty_toggled = QtCore.pyqtSignal(bool)
+    save_calibration_requested = QtCore.pyqtSignal(str)
+    load_calibration_requested = QtCore.pyqtSignal(str)
 
     def __init__(
         self,
@@ -546,34 +830,60 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._event_position_label = QtWidgets.QLabel("Viewing: -/-")
         self._previous_button = QtWidgets.QPushButton("< Prev")
         self._next_button = QtWidgets.QPushButton("Next >")
-        self._baseline_button = QtWidgets.QPushButton("Calibrate Rest")
-        self._baseline_button.setObjectName("restButton")
-        self._baseline_button.setCheckable(True)
-        self._peak_button = QtWidgets.QPushButton("Calibrate MVC")
-        self._peak_button.setObjectName("mvcButton")
-        self._peak_button.setCheckable(True)
+        self._baseline_action = QtWidgets.QAction("Calibrate Rest", self)
+        self._baseline_action.setCheckable(True)
+        self._peak_action = QtWidgets.QAction("Calibrate MVC", self)
+        self._peak_action.setCheckable(True)
+        self._empty_action = QtWidgets.QAction("Calibrate Zero", self)
+        self._empty_action.setCheckable(True)
+        self._save_cal_action = QtWidgets.QAction("Save Calibration", self)
+        self._load_cal_action = QtWidgets.QAction("Load Calibration", self)
+        _cal_menu = QtWidgets.QMenu(self)
+        _cal_menu.addAction(self._baseline_action)
+        _cal_menu.addAction(self._peak_action)
+        _cal_menu.addAction(self._empty_action)
+        _cal_menu.addSeparator()
+        _cal_menu.addAction(self._save_cal_action)
+        _cal_menu.addAction(self._load_cal_action)
+        self._cal_menu_button = QtWidgets.QToolButton(self)
+        self._cal_menu_button.setText("Cal ▾")
+        self._cal_menu_button.setMenu(_cal_menu)
+        self._cal_menu_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self._pretrigger_baseline_button = QtWidgets.QPushButton("Rest from Pre-Trig")
+        self._pretrigger_baseline_button.setObjectName("preTrigRestButton")
+        self._pretrigger_baseline_button.setCheckable(True)
+        self._use_pretrigger_baseline: bool = False
         self._hook_controls_layout: QtWidgets.QHBoxLayout | None = None
         self._raw_plot_widgets: list[pg.PlotWidget] = []
         self._raw_curves: list[pg.PlotDataItem] = []
         self._raw_max_markers: list[pg.PlotDataItem] = []
         self._mvc_ref_lines: list[pg.InfiniteLine] = []
+        self._zero_ref_lines: list[pg.InfiniteLine] = []
+        self._rest_ref_lines: list[pg.InfiniteLine] = []
         self._previous_shortcut: QtWidgets.QShortcut | None = None
         self._next_shortcut: QtWidgets.QShortcut | None = None
         self._sample_rate_hz = sample_rate_hz
         self._global_scale: bool = True
         self._show_mvc: bool = True
+        self._show_rest_ref: bool = False
+        self._show_zero_ref: bool = False
         self._last_capture: CapturedWindow | None = None
         self._finger_info_labels: list[QtWidgets.QLabel] = []
         self._onset_lines: list[_OnsetLine] = []
         self._auto_onset_ms: list[float | None] = [None] * _EXPECTED_FINGER_COUNT
         self._finger_p2p_strs: list[str] = ["P2P: —"] * _EXPECTED_FINGER_COUNT
+        self._rest_line_button = QtWidgets.QPushButton("Rest Line")
+        self._rest_line_button.setObjectName("restLineButton")
+        self._rest_line_button.setCheckable(True)
+        self._zero_line_button = QtWidgets.QPushButton("Zero Line")
+        self._zero_line_button.setObjectName("zeroLineButton")
+        self._zero_line_button.setCheckable(True)
         self._scale_button = QtWidgets.QPushButton("Global Scale")
         self._scale_button.setObjectName("scaleButton")
         self._scale_button.setCheckable(True)
         self._display_mode_button = QtWidgets.QPushButton("% MVC")
         self._display_mode_button.setObjectName("displayModeButton")
         self._display_mode_button.setCheckable(True)
-        self._monitor_button = QtWidgets.QPushButton("Trigger Monitor")
         self._trigger_monitor = TriggerMonitorWindow(
             sample_rate_hz=sample_rate_hz,
             parent=self,
@@ -589,6 +899,37 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             else None
         )
         self._emg_button.setEnabled(self._emg_window is not None)
+
+        finger_channel_pairs = list(zip(self._finger_channel_indices, self._finger_labels))
+        self._force_live_monitor = RollingChannelMonitor(
+            channels=finger_channel_pairs,
+            sample_rate_hz=sample_rate_hz,
+            title="Force Live Monitor",
+            parent=self,
+        )
+        self._emg_live_monitor: RollingChannelMonitor | None = (
+            RollingChannelMonitor(
+                channels=list(emg_channels),
+                sample_rate_hz=sample_rate_hz,
+                title="EMG Live Monitor",
+                show_filters=True,
+                parent=self,
+            )
+            if emg_channels
+            else None
+        )
+        self._trigger_monitor_action = QtWidgets.QAction("Trigger Monitor", self)
+        self._force_live_action = QtWidgets.QAction("Force Live", self)
+        self._emg_live_action = QtWidgets.QAction("EMG Live", self)
+        self._emg_live_action.setEnabled(self._emg_live_monitor is not None)
+        _live_menu = QtWidgets.QMenu(self)
+        _live_menu.addAction(self._trigger_monitor_action)
+        _live_menu.addAction(self._force_live_action)
+        _live_menu.addAction(self._emg_live_action)
+        self._live_menu_button = QtWidgets.QToolButton(self)
+        self._live_menu_button.setText("Live ▾")
+        self._live_menu_button.setMenu(_live_menu)
+        self._live_menu_button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
 
         self._apply_palette()
         self._build_layout()
@@ -626,7 +967,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
                 font-weight: 600;
                 padding-left: 8px;
             }
-            QPushButton {
+            QPushButton, QToolButton {
                 background: #DCE7F4;
                 border: 1px solid #BFD0E1;
                 border-radius: 8px;
@@ -635,13 +976,16 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
                 font-weight: 600;
                 padding: 5px 12px;
             }
-            QPushButton:disabled {
+            QPushButton:disabled, QToolButton:disabled {
                 background: #EEF3F9;
                 border-color: #DCE5EF;
                 color: #9AABBE;
             }
-            QPushButton:hover:!disabled {
+            QPushButton:hover:!disabled, QToolButton:hover:!disabled {
                 background: #CCDDF0;
+            }
+            QToolButton::menu-indicator {
+                image: none;
             }
             QPushButton#restButton:checked {
                 background: #0077B6;
@@ -651,6 +995,11 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             QPushButton#mvcButton:checked {
                 background: #E63946;
                 border-color: #D62828;
+                color: white;
+            }
+            QPushButton#zeroButton:checked {
+                background: #4A5568;
+                border-color: #2D3748;
                 color: white;
             }
             QPushButton#hookToggle:checked {
@@ -666,6 +1015,31 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             QPushButton#displayModeButton:checked {
                 background: #E07A10;
                 border-color: #B85E00;
+                color: white;
+            }
+            QPushButton#preTrigRestButton:checked {
+                background: #2E8B57;
+                border-color: #1F6B40;
+                color: white;
+            }
+            QPushButton#restLineButton:checked {
+                background: #0077B6;
+                border-color: #005A8C;
+                color: white;
+            }
+            QPushButton#zeroLineButton:checked {
+                background: #4A5568;
+                border-color: #2D3748;
+                color: white;
+            }
+            QPushButton#filterButton:checked {
+                background: #2A9D8F;
+                border-color: #1E7268;
+                color: white;
+            }
+            QPushButton#notchButton:checked {
+                background: #8E44AD;
+                border-color: #6C3483;
                 color: white;
             }
             """
@@ -707,16 +1081,25 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._event_position_label.setObjectName("eventPosition")
         self._previous_button.clicked.connect(self.previous_requested.emit)
         self._next_button.clicked.connect(self.next_requested.emit)
-        self._baseline_button.toggled.connect(self.baseline_toggled.emit)
-        self._peak_button.toggled.connect(self.peak_toggled.emit)
+        self._baseline_action.toggled.connect(self.baseline_toggled.emit)
+        self._pretrigger_baseline_button.toggled.connect(self._on_pretrigger_baseline_toggled)
+        self._peak_action.toggled.connect(self.peak_toggled.emit)
+        self._empty_action.toggled.connect(self.empty_toggled.emit)
+        self._save_cal_action.triggered.connect(self._on_save_cal_clicked)
+        self._load_cal_action.triggered.connect(self._on_load_cal_clicked)
+        self._rest_line_button.toggled.connect(self._on_rest_line_toggled)
+        self._zero_line_button.toggled.connect(self._on_zero_line_toggled)
         self._scale_button.toggled.connect(self._on_scale_toggled)
         self._display_mode_button.toggled.connect(self._on_display_mode_toggled)
-        self._monitor_button.clicked.connect(self._toggle_trigger_monitor)
+        self._trigger_monitor_action.triggered.connect(self._toggle_trigger_monitor)
         self._emg_button.clicked.connect(self._toggle_emg_monitor)
+        self._force_live_action.triggered.connect(self._toggle_force_live)
+        self._emg_live_action.triggered.connect(self._toggle_emg_live)
         self._previous_button.setToolTip("Previous event (Left Arrow)")
         self._next_button.setToolTip("Next event (Right Arrow)")
-        self._baseline_button.setToolTip("Toggle Rest (baseline) calibration")
-        self._peak_button.setToolTip("Toggle Maximum Voluntary Contraction calibration")
+        self._pretrigger_baseline_button.setToolTip(
+            "Use the pre-trigger window of each displayed event as its display baseline"
+        )
         self._hook_controls_layout = QtWidgets.QHBoxLayout()
         self._hook_controls_layout.setSpacing(8)
         navigation_layout.addWidget(self._previous_button)
@@ -726,10 +1109,12 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         navigation_layout.addWidget(self._build_legend())
         navigation_layout.addWidget(self._display_mode_button)
         navigation_layout.addWidget(self._scale_button)
-        navigation_layout.addWidget(self._baseline_button)
-        navigation_layout.addWidget(self._peak_button)
-        navigation_layout.addWidget(self._monitor_button)
+        navigation_layout.addWidget(self._rest_line_button)
+        navigation_layout.addWidget(self._zero_line_button)
+        navigation_layout.addWidget(self._pretrigger_baseline_button)
+        navigation_layout.addWidget(self._cal_menu_button)
         navigation_layout.addWidget(self._emg_button)
+        navigation_layout.addWidget(self._live_menu_button)
         navigation_layout.addLayout(self._hook_controls_layout)
         root_layout.addLayout(navigation_layout)
 
@@ -763,6 +1148,10 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         )
         self.range_plot.setYRange(0.0, 1.0, padding=0.0)
         self.range_plot.setXRange(-0.6, len(self._bar_display_labels) - 0.4, padding=0.0)
+        self.range_plot.addItem(pg.InfiniteLine(
+            pos=1.0, angle=0,
+            pen=pg.mkPen("#94A3B8", width=1.0, style=QtCore.Qt.DashLine),
+        ))
         self._draw_range_bars(np.zeros(len(self._bar_display_labels), dtype=np.float64))
 
     def _build_raw_grid(self, grid_layout: QtWidgets.QGridLayout) -> None:
@@ -813,6 +1202,26 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             peak_ref.setVisible(False)
             panel.addItem(peak_ref)
             self._mvc_ref_lines.append(peak_ref)
+
+            # Zero (no-contact) reference line, initially hidden.
+            pen_zero = pg.mkPen("#4A5568", width=1.2, style=QtCore.Qt.DashLine)
+            zero_ref = pg.InfiniteLine(
+                angle=0, pos=0, pen=pen_zero,
+                label="zero", labelOpts={"position": 0.04, "color": "#4A5568"},
+            )
+            zero_ref.setVisible(False)
+            panel.addItem(zero_ref)
+            self._zero_ref_lines.append(zero_ref)
+
+            # Rest (baseline) reference line, initially hidden.
+            pen_rest = pg.mkPen("#0077B6", width=1.2, style=QtCore.Qt.DashLine)
+            rest_ref = pg.InfiniteLine(
+                angle=0, pos=0, pen=pen_rest,
+                label="rest", labelOpts={"position": 0.96, "color": "#0077B6"},
+            )
+            rest_ref.setVisible(False)
+            panel.addItem(rest_ref)
+            self._rest_ref_lines.append(rest_ref)
 
             pen = pg.mkPen(FINGER_COLORS[finger_idx % len(FINGER_COLORS)], width=2.0)
             curve = panel.plot([], [], pen=pen)
@@ -939,6 +1348,31 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             self._emg_window.show()
             self._emg_window.raise_()
 
+    def _toggle_force_live(self) -> None:
+        """Shows the live force monitor window if hidden, hides it if visible."""
+        if self._force_live_monitor.isVisible():
+            self._force_live_monitor.hide()
+        else:
+            self._force_live_monitor.show()
+            self._force_live_monitor.raise_()
+
+    def _toggle_emg_live(self) -> None:
+        """Shows the live EMG monitor window if hidden, hides it if visible."""
+        if self._emg_live_monitor is None:
+            return
+        if self._emg_live_monitor.isVisible():
+            self._emg_live_monitor.hide()
+        else:
+            self._emg_live_monitor.show()
+            self._emg_live_monitor.raise_()
+
+    def push_live_batch(self, timestamps: np.ndarray, signals: np.ndarray) -> None:
+        """Forwards a raw batch to any visible live channel monitors."""
+        if self._force_live_monitor.isVisible():
+            self._force_live_monitor.push_batch(timestamps, signals)
+        if self._emg_live_monitor is not None and self._emg_live_monitor.isVisible():
+            self._emg_live_monitor.push_batch(timestamps, signals)
+
     def push_trigger_batch(
         self,
         timestamps: np.ndarray,
@@ -978,17 +1412,86 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._hook_controls_layout.addWidget(toggle_btn)
         self._hook_controls_layout.addWidget(reset_btn)
 
+    def add_rtms_controls(
+        self,
+        items: Sequence[tuple[str, Callable[[bool], None], Callable[[], None]]],
+    ) -> None:
+        """Adds the rTMS menu button to the toolbar. `items` is a sequence of
+        (name, set_active, reset). The menu's checkable entries are mutually
+        exclusive: enabling one disables the other; clicking the active entry
+        turns it off. Reset acts on whichever entry is currently active."""
+        menu = QtWidgets.QMenu(self)
+        actions: list[tuple[QtWidgets.QAction, Callable[[bool], None], Callable[[], None]]] = []
+
+        for name, set_active, reset in items:
+            action = QtWidgets.QAction(name, self)
+            action.setCheckable(True)
+            actions.append((action, set_active, reset))
+            menu.addAction(action)
+
+        def _make_handler(idx: int) -> Callable[[bool], None]:
+            def _handler(checked: bool) -> None:
+                if checked:
+                    for j, (other, other_set_active, _) in enumerate(actions):
+                        if j != idx and other.isChecked():
+                            other.blockSignals(True)
+                            other.setChecked(False)
+                            other.blockSignals(False)
+                            other_set_active(False)
+                actions[idx][1](checked)
+            return _handler
+
+        for idx, (action, _, _) in enumerate(actions):
+            action.toggled.connect(_make_handler(idx))
+
+        menu.addSeparator()
+        reset_action = QtWidgets.QAction("Reset", self)
+
+        def _on_reset() -> None:
+            for action, _, reset in actions:
+                if action.isChecked():
+                    reset()
+                    return
+        reset_action.triggered.connect(_on_reset)
+        menu.addAction(reset_action)
+
+        button = QtWidgets.QToolButton(self)
+        button.setText("rTMS ▾")
+        button.setMenu(menu)
+        button.setPopupMode(QtWidgets.QToolButton.InstantPopup)
+        self._hook_controls_layout.addWidget(button)
+
+    def _on_save_cal_clicked(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Calibration", "", "NumPy archive (*.npz)"
+        )
+        if path:
+            self.save_calibration_requested.emit(path)
+
+    def _on_load_cal_clicked(self) -> None:
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load Calibration", "", "NumPy archive (*.npz)"
+        )
+        if path:
+            self.load_calibration_requested.emit(path)
+
     def revert_baseline_button(self) -> None:
-        """Unchecks the baseline calibration button without triggering signals."""
-        self._baseline_button.blockSignals(True)
-        self._baseline_button.setChecked(False)
-        self._baseline_button.blockSignals(False)
+        """Unchecks the baseline calibration action without triggering signals."""
+        self._baseline_action.blockSignals(True)
+        self._baseline_action.setChecked(False)
+        self._baseline_action.blockSignals(False)
 
     def revert_peak_button(self) -> None:
-        """Unchecks the peak calibration button without triggering signals."""
-        self._peak_button.blockSignals(True)
-        self._peak_button.setChecked(False)
-        self._peak_button.blockSignals(False)
+        """Unchecks the peak calibration action without triggering signals."""
+        self._peak_action.blockSignals(True)
+        self._peak_action.setChecked(False)
+        self._peak_action.blockSignals(False)
+
+    def revert_empty_button(self) -> None:
+        """Unchecks the zero calibration action without triggering signals."""
+        self._empty_action.blockSignals(True)
+        self._empty_action.setChecked(False)
+        self._empty_action.blockSignals(False)
 
     def show_error(self, message: str) -> None:
         """Displays a critical error message in a popup dialog."""
@@ -1011,29 +1514,40 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             f"Last trigger: {datetime.now().strftime('%H:%M:%S')}"
         )
 
-    def set_calibration_status(self, baseline_done: bool, peak_done: bool) -> None:
-        """Updates the calibration summary label with rest and MVC status marks."""
+    def set_calibration_status(
+        self, baseline_done: bool, peak_done: bool, empty_done: bool = False
+    ) -> None:
+        """Updates the calibration summary label with rest, MVC, and zero status marks."""
         rest_mark = "✓" if baseline_done else "✗"
         mvc_mark = "✓" if peak_done else "✗"
-        self._cal_status_label.setText(f"Cal: Rest {rest_mark} | MVC {mvc_mark}")
+        zero_mark = "✓" if empty_done else "✗"
+        self._cal_status_label.setText(
+            f"Cal: Rest {rest_mark} | MVC {mvc_mark} | Zero {zero_mark}"
+        )
 
     def show_calibration_report(
         self,
         display_channels: list[tuple[int, str]],
         baseline: np.ndarray | None,
         peak: np.ndarray | None,
+        empty: np.ndarray | None = None,
     ) -> None:
         """Pop up a per-channel calibration summary."""
-        header = f"{'Channel':<12} {'Rest':>10} {'MVC':>10} {'Span':>10}"
+        header = (
+            f"{'Channel':<12} {'Zero':>10} {'Rest':>10} {'MVC':>10} {'Span':>10}"
+        )
         rows = [header, "-" * len(header)]
         for ch_idx, label in display_channels:
+            zero_val = "—" if empty is None else f"{empty[ch_idx]:.2f}"
             rest_val = "—" if baseline is None else f"{baseline[ch_idx]:.2f}"
             mvc_val = "—" if peak is None else f"{peak[ch_idx]:.2f}"
             if baseline is not None and peak is not None:
                 span_val = f"{peak[ch_idx] - baseline[ch_idx]:.2f}"
             else:
                 span_val = "—"
-            rows.append(f"{label:<12} {rest_val:>10} {mvc_val:>10} {span_val:>10}")
+            rows.append(
+                f"{label:<12} {zero_val:>10} {rest_val:>10} {mvc_val:>10} {span_val:>10}"
+            )
 
         dialog = QtWidgets.QMessageBox(self)
         dialog.setWindowTitle("Calibration Report")
@@ -1068,6 +1582,24 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         if self._last_capture is not None:
             self.update_capture(self._last_capture)
 
+    def _on_pretrigger_baseline_toggled(self, checked: bool) -> None:
+        """Toggles using the pre-trigger window of each event as its display baseline."""
+        self._use_pretrigger_baseline = checked
+        if self._last_capture is not None:
+            self.update_capture(self._last_capture)
+
+    def _on_rest_line_toggled(self, checked: bool) -> None:
+        """Toggles the rest baseline reference line on the per-finger plots."""
+        self._show_rest_ref = checked
+        if self._last_capture is not None:
+            self.update_capture(self._last_capture)
+
+    def _on_zero_line_toggled(self, checked: bool) -> None:
+        """Toggles the zero (no-contact) reference line on the per-finger plots."""
+        self._show_zero_ref = checked
+        if self._last_capture is not None:
+            self.update_capture(self._last_capture)
+
     def _on_scale_toggled(self, checked: bool) -> None:
         """Toggles between global and per-finger Y-axis scaling."""
         self._global_scale = not checked
@@ -1093,29 +1625,45 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         """Render one captured event in both plots."""
         self._last_capture = captured
         sig = captured.batch.signals
-        has_cal = captured.meta.baseline is not None and captured.meta.peak is not None
+
+        if self._use_pretrigger_baseline:
+            end = max(captured.trigger_sample, 1)
+            baseline: np.ndarray | None = np.mean(captured.batch.signals[:end, :], axis=0)
+        else:
+            baseline = captured.meta.baseline
+
+        has_cal = baseline is not None and captured.meta.peak is not None
+        empty = captured.meta.empty
+        zero_positions: np.ndarray | None = None  # per-channel zero ref in display units
 
         # % MVC mode: normalize signals; Raw mode: normalize by global max MVC span if
         # calibrated, otherwise subtract baseline or show raw.
         raw_mvc_span: float | None = None  # global max span used for raw-mode ref lines
         if self._show_mvc and has_cal:
-            span = captured.meta.peak - captured.meta.baseline
+            span = captured.meta.peak - baseline
             safe_span = np.where(span != 0, span, 1.0)
-            sig = (sig - captured.meta.baseline) / safe_span * 100.0
+            sig = (sig - baseline) / safe_span * 100.0
             unit = "% MVC"
+            if empty is not None:
+                zero_positions = (empty - baseline) / safe_span * 100.0
         else:
-            has_baseline = captured.meta.baseline is not None
             if has_cal:
-                span = captured.meta.peak - captured.meta.baseline
+                span = captured.meta.peak - baseline
                 max_span = float(np.max(span[self._finger_channel_indices]))
                 raw_mvc_span = max_span if max_span != 0 else 1.0
-                sig = (sig - captured.meta.baseline) / raw_mvc_span * 100.0
+                sig = (sig - baseline) / raw_mvc_span * 100.0
                 unit = "% max MVC"
-            elif has_baseline:
-                sig = sig - captured.meta.baseline
+                if empty is not None:
+                    zero_positions = (empty - baseline) / raw_mvc_span * 100.0
+            elif baseline is not None:
+                sig = sig - baseline
                 unit = "a.u."
+                if empty is not None:
+                    zero_positions = empty - baseline
             else:
                 unit = "a.u."
+                if empty is not None:
+                    zero_positions = empty.astype(np.float64, copy=True)
         self._apply_unit_labels(unit)
 
         relative_time = (
@@ -1143,8 +1691,20 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             show_ref = not self._show_mvc and has_cal
             peak_ref.setVisible(show_ref)
             if show_ref and raw_mvc_span is not None:
-                finger_span = float(captured.meta.peak[ch_idx] - captured.meta.baseline[ch_idx])
+                finger_span = float(captured.meta.peak[ch_idx] - baseline[ch_idx])
                 peak_ref.setPos(finger_span / raw_mvc_span * 100.0)
+
+            # Zero (no-contact) reference line.
+            zero_ref = self._zero_ref_lines[local_idx]
+            if self._show_zero_ref and zero_positions is not None:
+                zero_ref.setPos(float(zero_positions[ch_idx]))
+                zero_ref.setVisible(True)
+            else:
+                zero_ref.setVisible(False)
+
+            # Rest (baseline) reference line — always at 0 in display units.
+            rest_ref = self._rest_ref_lines[local_idx]
+            rest_ref.setVisible(self._show_rest_ref and baseline is not None)
 
             # P2P and onset overlay.
             p2p = float(np.ptp(force_data)) if force_data.size > 0 else 0.0
@@ -1164,6 +1724,11 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             lbl.adjustSize()
 
         finger_signals = sig[:, self._finger_channel_indices]
+        finger_zero_positions: np.ndarray | None = (
+            zero_positions[self._finger_channel_indices]
+            if zero_positions is not None
+            else None
+        )
         if relative_time.size > 0 and self._raw_plot_widgets:
             x_min = float(relative_time[0])
             x_max = float(relative_time[-1])
@@ -1171,6 +1736,8 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             if self._global_scale:
                 y_min = float(np.min(finger_signals))
                 y_max = float(np.max(finger_signals))
+                if self._show_zero_ref and finger_zero_positions is not None:
+                    y_min = min(y_min, float(np.min(finger_zero_positions)))
                 y_span = y_max - y_min
                 y_padding = max(0.8, y_span * 0.08)
                 for panel in self._raw_plot_widgets:
@@ -1181,6 +1748,8 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
                     finger_data = finger_signals[:, local_idx]
                     f_min = float(np.min(finger_data))
                     f_max = float(np.max(finger_data))
+                    if self._show_zero_ref and finger_zero_positions is not None:
+                        f_min = min(f_min, float(finger_zero_positions[local_idx]))
                     f_span = f_max - f_min
                     f_padding = max(0.8, f_span * 0.08)
                     panel.setXRange(x_min, x_max, padding=0.0)
@@ -1192,6 +1761,11 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self.range_plot.setYRange(
             0.0, max(1.0, float(np.max(ordered_ranges)) * 1.2), padding=0.0
         )
+
+        # Force a full viewport repaint: pyqtgraph's dirty-rect omits the
+        # antialias fringe, leaving ghost trails of the prior capture.
+        for panel in self._raw_plot_widgets:
+            panel.viewport().update()
 
         if self._emg_window is not None:
             self._emg_window.update_capture(captured)

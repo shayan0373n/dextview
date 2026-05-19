@@ -1,8 +1,6 @@
-from __future__ import annotations
-
 from collections import deque
 from dataclasses import replace
-from typing import Sequence
+from collections.abc import Callable, Sequence
 
 import numpy as np
 from numpy.typing import NDArray
@@ -41,8 +39,10 @@ class QuattrocentoController(QtCore.QObject):
         self._current_event_index: int | None = None
         self._baseline_calibrating: bool = False
         self._peak_calibrating: bool = False
+        self._empty_calibrating: bool = False
         self._baseline_buffer: list[NDArray[np.float64]] = []
         self._peak_buffer: list[NDArray[np.float64]] = []
+        self._empty_buffer: list[NDArray[np.float64]] = []
         self._meta = meta
 
         self._timer = QtCore.QTimer(self)
@@ -51,14 +51,24 @@ class QuattrocentoController(QtCore.QObject):
         self._window.next_requested.connect(self._show_next_event)
         self._window.baseline_toggled.connect(self._on_baseline_toggled)
         self._window.peak_toggled.connect(self._on_peak_toggled)
+        self._window.empty_toggled.connect(self._on_empty_toggled)
+        self._window.save_calibration_requested.connect(self._on_save_calibration)
+        self._window.load_calibration_requested.connect(self._on_load_calibration)
 
+        rtms_items: list[tuple[str, Callable[[bool], None], Callable[[], None]]] = []
         for hook in (*self._stream_hooks, *self._event_hooks):
-            if hook.ui_controls:
+            if not hook.ui_controls:
+                continue
+            if getattr(hook, "group", None) == "rtms":
+                rtms_items.append((hook.name, hook.set_active, hook.reset))
+            else:
                 self._window.add_hook_controls(
                     hook.name,
                     on_toggle=hook.set_active,
                     on_reset=hook.reset,
                 )
+        if rtms_items:
+            self._window.add_rtms_controls(rtms_items)
 
     def start(self) -> None:
         """Starts the stream polling and shows the UI."""
@@ -110,9 +120,35 @@ class QuattrocentoController(QtCore.QObject):
                 self._window.show_error("MVC calibration failed: no data collected.")
             self._update_calibration_ui()
 
+    def _on_empty_toggled(self, active: bool) -> None:
+        """Handles toggling of the zero (no-contact) calibration mode."""
+        if active and self._processor.is_capturing:
+            self._window.show_error(
+                "Cannot start zero calibration while a trigger window is in progress."
+            )
+            self._window.revert_empty_button()
+            return
+        self._empty_calibrating = active
+        if active:
+            self._empty_buffer.clear()
+            self._meta = replace(self._meta, empty=None)
+            self._update_calibration_ui()
+        else:
+            if self._empty_buffer:
+                data = np.concatenate(self._empty_buffer, axis=0)
+                self._meta = replace(self._meta, empty=np.mean(data, axis=0))
+                self._show_calibration_report()
+            else:
+                self._window.show_error("Zero calibration failed: no data collected.")
+            self._update_calibration_ui()
+
     def _show_calibration_report(self) -> None:
         """Updates and displays the calibration report in the UI."""
-        if self._meta.baseline is None and self._meta.peak is None:
+        if (
+            self._meta.baseline is None
+            and self._meta.peak is None
+            and self._meta.empty is None
+        ):
             return
         display_channels = sorted(
             (idx, label) for idx, label in self._meta.channel_labels.items()
@@ -122,13 +158,62 @@ class QuattrocentoController(QtCore.QObject):
             display_channels=display_channels,
             baseline=self._meta.baseline,
             peak=self._meta.peak,
+            empty=self._meta.empty,
         )
+
+    def _on_save_calibration(self, path: str) -> None:
+        """Saves non-None calibration arrays (zero/rest/MVC) to a .npz file."""
+        arrays: dict[str, NDArray[np.float64]] = {}
+        if self._meta.baseline is not None:
+            arrays["baseline"] = self._meta.baseline
+        if self._meta.peak is not None:
+            arrays["peak"] = self._meta.peak
+        if self._meta.empty is not None:
+            arrays["empty"] = self._meta.empty
+        if not arrays:
+            self._window.show_error("No calibration data to save.")
+            return
+        try:
+            np.savez(path, **arrays)
+        except (OSError, ValueError) as exc:
+            self._window.show_error(f"Failed to save calibration: {exc}")
+
+    def _on_load_calibration(self, path: str) -> None:
+        """Loads calibration arrays from a .npz file and replaces the current meta."""
+        try:
+            data = np.load(path)
+        except (OSError, ValueError) as exc:
+            self._window.show_error(f"Failed to load calibration: {exc}")
+            return
+
+        n = self._config.n_channels
+
+        def _get(key: str) -> NDArray[np.float64] | None:
+            if key not in data:
+                return None
+            arr = data[key]
+            if arr.shape != (n,):
+                raise ValueError(f"{key} has shape {arr.shape}, expected ({n},)")
+            return arr.astype(np.float64)
+
+        try:
+            baseline = _get("baseline")
+            peak = _get("peak")
+            empty = _get("empty")
+        except ValueError as exc:
+            self._window.show_error(f"Calibration file mismatch: {exc}")
+            return
+
+        self._meta = replace(self._meta, baseline=baseline, peak=peak, empty=empty)
+        self._update_calibration_ui()
+        self._show_calibration_report()
 
     def _update_calibration_ui(self) -> None:
         """Refreshes the calibration status indicators in the UI."""
         self._window.set_calibration_status(
             baseline_done=self._meta.baseline is not None,
             peak_done=self._meta.peak is not None,
+            empty_done=self._meta.empty is not None,
         )
 
     def _on_timer_tick(self) -> None:
@@ -153,12 +238,15 @@ class QuattrocentoController(QtCore.QObject):
             effective_threshold=self._processor.effective_threshold,
             warmup_remaining=self._processor.warmup_remaining_samples,
         )
+        self._window.push_live_batch(batch.timestamps, batch.signals)
 
-        if self._baseline_calibrating or self._peak_calibrating:
+        if self._baseline_calibrating or self._peak_calibrating or self._empty_calibrating:
             if self._baseline_calibrating:
                 self._update_baseline(batch)
             if self._peak_calibrating:
                 self._update_peak(batch)
+            if self._empty_calibrating:
+                self._update_empty(batch)
             return
 
         for captured in captured_list:
@@ -177,6 +265,12 @@ class QuattrocentoController(QtCore.QObject):
         if batch.signals.shape[0] == 0:
             return
         self._peak_buffer.append(batch.signals)
+
+    def _update_empty(self, batch: DataBatch) -> None:
+        """Appends new batch data to the zero (no-contact) calibration buffer."""
+        if batch.signals.shape[0] == 0:
+            return
+        self._empty_buffer.append(batch.signals)
 
     def _append_capture(self, captured: CapturedWindow) -> None:
         """Stores a new capture window and updates the UI to show it."""

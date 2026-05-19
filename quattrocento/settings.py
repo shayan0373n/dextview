@@ -1,7 +1,6 @@
-from __future__ import annotations
-
 from pathlib import Path
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 from .protocol import (
     DEFAULT_CONF2_BYTE,

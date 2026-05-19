@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from pathlib import Path
 import tomllib
 
@@ -20,7 +18,7 @@ def load_channels(
         [labels]
         "L Thumb"  = { index = 0, scale = 0.01667 }
         "EMG 1"    = { index = 11, scale = 1.0, kind = "emg" }
-        "trigger"  = { index = 10, scale = 5.0 }
+        "trigger"  = { index = 10, scale = 5.0, kind = "trigger" }
     """
     config_path = Path(path)
     with config_path.open("rb") as handle:

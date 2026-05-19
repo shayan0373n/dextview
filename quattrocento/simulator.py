@@ -19,7 +19,6 @@ Wire format matches what the rebroadcast client expects:
   for another `startTX` until the client disconnects.
 """
 
-from __future__ import annotations
 
 import argparse
 import logging

@@ -1,7 +1,5 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import Sequence
+from collections.abc import Sequence
 
 SUPPORTED_SAMPLE_RATES = (512, 2048, 5120, 10240)
 NCH_BITS_TO_NUM_CHANNELS = {0: 120, 1: 216, 2: 312, 3: 408}

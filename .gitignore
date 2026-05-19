@@ -3,6 +3,6 @@ __pycache__
 reports
 .pytest_cache
 todo.md
-session_*/
+logs/
 .claude/
 *.diff

@@ -1,7 +1,6 @@
-from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import Mapping, Protocol
+from collections.abc import Mapping
+from typing import Protocol
 
 from .config import QuattrocentoConfig
 
@@ -36,6 +35,7 @@ class StreamMeta:
     config: QuattrocentoConfig
     baseline: NDArray[np.float64] | None = None  # (n_channels,)
     peak: NDArray[np.float64] | None = None       # (n_channels,)
+    empty: NDArray[np.float64] | None = None      # (n_channels,) — no-contact reference, display only
 
     def index_of(self, label: str) -> int:
         """Return the channel index for a label; raises KeyError if absent."""

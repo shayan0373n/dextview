@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import argparse
 import logging
 import sys
@@ -10,7 +8,7 @@ from PyQt5 import QtCore, QtWidgets
 
 from .capture_log import CaptureLogger
 from .channels import load_channels
-from .hooks import PassedTenPercentAnyFinger
+from .hooks import HoldInTargetAnyFinger, PassedThresholdAnyFinger
 from .config import QuattrocentoConfig
 from .controller import QuattrocentoController
 from .models import StreamMeta
@@ -371,7 +369,10 @@ def main(argv: list[str] | None = None) -> int:
     event_hooks = [CaptureLogger(args.log_dir)] if args.log_dir else []
     controller = QuattrocentoController(
         stream.config, stream, processor, window, meta,
-        stream_hooks=[PassedTenPercentAnyFinger(finger_indices=finger_indices)],
+        stream_hooks=[
+            PassedThresholdAnyFinger(finger_indices=finger_indices),
+            HoldInTargetAnyFinger(finger_indices=finger_indices),
+        ],
         event_hooks=event_hooks,
     )
     controller.start()
