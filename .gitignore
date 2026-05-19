@@ -7,4 +7,5 @@ logs/
 .claude/
 .antigravitycli/
 *.diff
+*.npz
 artefacts/
