@@ -1,5 +1,5 @@
 from datetime import datetime
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 
 import numpy as np
 import pyqtgraph as pg
@@ -8,6 +8,8 @@ from PyQt5.QtCore import Qt
 from scipy.signal import butter, iirnotch, sosfiltfilt, tf2sos
 
 from dataclasses import dataclass
+
+from .models import ChannelKind, Channels
 
 
 _RAW_GRID_COLUMNS = 5
@@ -142,8 +144,19 @@ def _build_mirrored_bar_layout(
 
 
 @dataclass(slots=True, frozen=True)
-class _CaptureState:
-    """Internal UI-only snapshot of capture data."""
+class _EmgCaptureState:
+    """Internal snapshot of captured EMG event data."""
+    timestamps: np.ndarray
+    signals: np.ndarray
+    trigger_sample: int
+    sample_rate_hz: int
+    # Per-finger onset in ms relative to trigger; None when detection failed
+    onset_ms_list: list[float | None] | None = None
+
+
+@dataclass(slots=True, frozen=True)
+class _MainCaptureState:
+    """Internal snapshot of captured finger/MVC event data."""
     timestamps: np.ndarray
     signals: np.ndarray
     trigger_sample: int
@@ -151,7 +164,7 @@ class _CaptureState:
     peak: np.ndarray | None
     empty: np.ndarray | None
     sample_rate_hz: int
-    # Optional onset/p2p results computed upstream or cached here
+    # Per-finger onset in ms relative to trigger; None when detection failed
     onset_ms_list: list[float | None] | None = None
 
 
@@ -536,7 +549,7 @@ class EmgMonitorWindow(QtWidgets.QWidget):
         self._sample_rate_hz = sample_rate_hz
         self._global_scale: bool = True
         self._post_skip_ms: float = 0.0
-        self._last_capture: _CaptureState | None = None
+        self._last_capture: _EmgCaptureState | None = None
         self._filter_sos = _design_emg_bandpass(sample_rate_hz)
         self._filter_enabled: bool = False
         self._notch_sos = _design_emg_notch(sample_rate_hz)
@@ -759,13 +772,10 @@ class EmgMonitorWindow(QtWidgets.QWidget):
         onset_ms_list: list[float | None],
     ) -> None:
         """Updates the EMG panels with data from a new capture."""
-        self._last_capture = _CaptureState(
+        self._last_capture = _EmgCaptureState(
             timestamps=timestamps,
             signals=signals,
             trigger_sample=trigger_sample,
-            baseline=None,
-            peak=None,
-            empty=None,
             sample_rate_hz=sample_rate_hz,
             onset_ms_list=onset_ms_list,
         )
@@ -874,30 +884,26 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
 
     def __init__(
         self,
-        channel_labels: Mapping[int, str],
-        trigger_channel: int,
+        channels: Channels,
         sample_rate_hz: int,
         trigger_threshold: float,
-        emg_channels: Sequence[tuple[int, str]] = (),
     ) -> None:
         super().__init__()
 
-        emg_indices: set[int] = {idx for idx, _ in emg_channels}
+        emg = channels.by_kind(ChannelKind.EMG)
+        emg_indices: set[int] = set(emg.indices)
+        emg_channels = list(zip(emg.indices, emg.labels))
 
         # Ordered non-trigger, non-EMG finger channels, sorted by channel index.
-        finger_channels = sorted(
-            (idx, label)
-            for idx, label in channel_labels.items()
-            if idx != trigger_channel and idx not in emg_indices
-        )
-        if len(finger_channels) != _EXPECTED_FINGER_COUNT:
+        fingers = channels.by_kind(ChannelKind.FINGER)
+        if len(fingers.indices) != _EXPECTED_FINGER_COUNT:
             raise ValueError(
                 f"Expected exactly {_EXPECTED_FINGER_COUNT} labeled non-trigger "
-                f"channels, got {len(finger_channels)}. "
+                f"channels, got {len(fingers.indices)}. "
                 "Update your channels file."
             )
-        self._finger_channel_indices: list[int] = [idx for idx, _ in finger_channels]
-        self._finger_labels: tuple[str, ...] = tuple(label for _, label in finger_channels)
+        self._finger_channel_indices: list[int] = list(fingers.indices)
+        self._finger_labels: tuple[str, ...] = fingers.labels
 
         # Bar display order (mirrored hand layout if labels parse correctly).
         bar_local_indices, bar_labels = _build_mirrored_bar_layout(self._finger_labels)
@@ -951,7 +957,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._show_mvc: bool = True
         self._show_rest_ref: bool = False
         self._show_zero_ref: bool = False
-        self._last_capture: _CaptureState | None = None
+        self._last_capture: _MainCaptureState | None = None
         self._finger_info_labels: list[QtWidgets.QLabel] = []
         self._onset_lines: list[_OnsetLine] = []
         self._auto_onset_ms: list[float | None] = [None] * _EXPECTED_FINGER_COUNT
@@ -984,7 +990,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         )
         self._emg_button.setEnabled(self._emg_window is not None)
 
-        finger_channel_pairs = list(zip(self._finger_channel_indices, self._finger_labels))
+        finger_channel_pairs = list(zip(fingers.indices, fingers.labels))
         self._force_live_monitor = RollingChannelMonitor(
             channels=finger_channel_pairs,
             sample_rate_hz=sample_rate_hz,
@@ -1714,7 +1720,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         onset_ms_list: list[float | None],
     ) -> None:
         """Render one captured event in both plots."""
-        self._last_capture = _CaptureState(
+        self._last_capture = _MainCaptureState(
             timestamps=timestamps,
             signals=signals,
             trigger_sample=trigger_sample,

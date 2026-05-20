@@ -1,17 +1,15 @@
 from pathlib import Path
 import tomllib
 
-
-_VALID_KINDS = ("finger", "emg", "trigger")
+from .models import ChannelInfo, ChannelKind, Channels
 
 
 def load_channels(
     path: str | Path,
-) -> tuple[dict[int, str], dict[int, float], dict[int, str]]:
+) -> Channels:
     """Parse a TOML channels file.
 
-    Returns three index-keyed maps: label, scale, and kind. ``kind`` is
-    "finger" by default and can be set to "emg" or "trigger".
+    Returns an index-keyed map of ChannelInfo. Expects exactly one trigger channel.
 
     TOML format::
 
@@ -28,9 +26,7 @@ def load_channels(
     if not isinstance(raw_labels, dict):
         raise ValueError("[labels] must be a TOML table")
 
-    channel_labels: dict[int, str] = {}
-    channel_scales: dict[int, float] = {}
-    channel_kinds: dict[int, str] = {}
+    parsed: dict[int, ChannelInfo] = {}
     for label, conf in raw_labels.items():
         if not isinstance(label, str):
             raise ValueError(f"Label key must be a string, got {label!r}")
@@ -40,7 +36,7 @@ def load_channels(
             if idx is None:
                 raise ValueError(f"Label {label!r}: missing 'index'")
             scale = float(conf.get("scale", 1.0))
-            kind = conf.get("kind", "finger")
+            kind_str = conf.get("kind", "finger")
         else:
             raise ValueError(f"Label {label!r}: invalid config {conf!r}")
 
@@ -50,17 +46,29 @@ def load_channels(
             )
         if idx < 0:
             raise ValueError(f"Label {label!r}: index must be >= 0, got {idx}")
-        if idx in channel_labels:
-            existing = channel_labels[idx]
+        if idx in parsed:
+            existing = parsed[idx].label
             raise ValueError(
                 f"Duplicate channel index {idx} (labels {existing!r} and {label!r})"
             )
-        if not isinstance(kind, str) or kind not in _VALID_KINDS:
+        try:
+            kind = ChannelKind(kind_str.lower().strip())
+        except ValueError as exc:
+            valid_kinds = [k.value for k in ChannelKind]
             raise ValueError(
-                f"Label {label!r}: kind must be one of {_VALID_KINDS}, got {kind!r}"
-            )
-        channel_labels[idx] = label
-        channel_scales[idx] = scale
-        channel_kinds[idx] = kind
+                f"Label {label!r}: kind must be one of {valid_kinds}, got {kind_str!r}"
+            ) from exc
 
-    return channel_labels, channel_scales, channel_kinds
+        parsed[idx] = ChannelInfo(label=label, kind=kind, scale=scale)
+
+    channels = Channels(parsed)
+
+    # Validate that exactly one trigger channel exists
+    trigger_indices = channels.by_kind(ChannelKind.TRIGGER).indices
+    if len(trigger_indices) != 1:
+        raise ValueError(
+            f"Expected exactly one channel with kind='trigger', found {len(trigger_indices)}"
+        )
+
+    return channels
+

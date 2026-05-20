@@ -6,7 +6,7 @@ import numpy as np
 from quattrocento.config import QuattrocentoConfig
 from quattrocento.hooks import HoldInTargetAnyFinger, PassedThresholdAnyFinger
 from quattrocento.hooks.logic import _HoldInBandDetector, _RampOnsetDetector
-from quattrocento.models import DataBatch, StreamMeta
+from quattrocento.models import DataBatch, StreamMeta, ChannelInfo, ChannelKind, Channels
 
 
 def _detector(
@@ -29,7 +29,6 @@ def _hook(**kwargs) -> PassedThresholdAnyFinger:
     kwargs.setdefault("finger_indices", [0])
     kwargs.setdefault("pulse", MagicMock())
     h = PassedThresholdAnyFinger(**kwargs)
-    h._hw = MagicMock()
     h._meter = MagicMock()
     h._active = True
     return h
@@ -39,9 +38,13 @@ def _meta(rest: float = 0.0, mvc_max: float = 100.0) -> StreamMeta:
     """StreamMeta with a single R Index finger at channel 0.
 
     With rest=0 and mvc_max=100 the force values equal % MVC directly."""
+    channels = Channels({
+        0: ChannelInfo(label="R Index", kind=ChannelKind.FINGER),
+        1: ChannelInfo(label="trigger", kind=ChannelKind.TRIGGER),
+    })
     return StreamMeta(
-        channel_labels={0: "R Index"},
-        config=QuattrocentoConfig(sample_rate_hz=2, n_channels=2),
+        channels=channels,
+        config=QuattrocentoConfig(sample_rate_hz=2, n_channels=2, trigger_channel=1),
         baseline=np.array([rest, 0.0]),
         peak=np.array([mvc_max, 1.0]),
     )
@@ -243,8 +246,11 @@ class CompositorCalibrationTests(unittest.TestCase):
     def test_missing_baseline_sets_meter_status(self) -> None:
         h = _hook()
         meta = StreamMeta(
-            channel_labels={0: "R Index"},
-            config=QuattrocentoConfig(sample_rate_hz=2, n_channels=2),
+            channels=Channels({
+                0: ChannelInfo(label="R Index", kind=ChannelKind.FINGER),
+                1: ChannelInfo(label="trigger", kind=ChannelKind.TRIGGER),
+            }),
+            config=QuattrocentoConfig(sample_rate_hz=2, n_channels=2, trigger_channel=1),
             baseline=None,
             peak=np.array([100.0, 1.0]),
         )
@@ -451,7 +457,6 @@ def _hold_hook(**kwargs) -> HoldInTargetAnyFinger:
     kwargs.setdefault("finger_indices", [0])
     kwargs.setdefault("pulse", MagicMock())
     h = HoldInTargetAnyFinger(**kwargs)
-    h._hw = MagicMock()
     h._meter = MagicMock()
     h._active = True
     return h

@@ -3,7 +3,7 @@ import unittest
 import numpy as np
 
 from quattrocento.config import QuattrocentoConfig
-from quattrocento.models import DataBatch, StreamMeta
+from quattrocento.models import DataBatch, StreamMeta, ChannelInfo, ChannelKind, Channels
 from quattrocento.processing import TriggerWindowProcessor
 
 # 10 force channels + 1 trigger channel in every test.
@@ -11,9 +11,21 @@ N_CHANNELS = 11
 TRIGGER_CH = 10
 
 
+def _make_channels() -> Channels:
+    """Build channels map for testing."""
+    parsed = {}
+    for i in range(N_CHANNELS):
+        if i == TRIGGER_CH:
+            parsed[i] = ChannelInfo(label=f"ch{i}", kind=ChannelKind.TRIGGER)
+        else:
+            parsed[i] = ChannelInfo(label=f"ch{i}", kind=ChannelKind.FINGER)
+    return Channels(parsed)
+
+
 def _meta(config: QuattrocentoConfig) -> StreamMeta:
+    """StreamMeta with unified channels dictionary."""
     return StreamMeta(
-        channel_labels={i: f"ch{i}" for i in range(N_CHANNELS)},
+        channels=_make_channels(),
         config=config,
     )
 
@@ -191,8 +203,9 @@ class WindowOffsetTests(unittest.TestCase):
         return TriggerWindowProcessor(config)
 
     def _make_meta(self) -> StreamMeta:
+        """Create StreamMeta with test channels."""
         return StreamMeta(
-            channel_labels={i: f"ch{i}" for i in range(N_CHANNELS)},
+            channels=_make_channels(),
             config=QuattrocentoConfig(sample_rate_hz=self.RATE, n_channels=N_CHANNELS, trigger_channel=TRIGGER_CH),
         )
 
@@ -337,7 +350,7 @@ class WindowOffsetTests(unittest.TestCase):
         )
         proc = TriggerWindowProcessor(config)
         meta = StreamMeta(
-            channel_labels={i: f"ch{i}" for i in range(N_CHANNELS)},
+            channels=_make_channels(),
             config=config,
         )
         edge = 64
@@ -359,7 +372,7 @@ class WindowOffsetTests(unittest.TestCase):
         )
         proc = TriggerWindowProcessor(config)
         meta = StreamMeta(
-            channel_labels={i: f"ch{i}" for i in range(N_CHANNELS)},
+            channels=_make_channels(),
             config=config,
         )
         edge = 56

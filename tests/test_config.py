@@ -48,16 +48,17 @@ class LoadChannelsTests(unittest.TestCase):
             [labels]
             "L Thumb" = { index = 0, scale = 5.0 }
             "R Index" = { index = 6, scale = 5.0 }
-            "trigger" = { index = 10, scale = 5.0 }
+            "trigger" = { index = 10, scale = 5.0, kind = "trigger" }
             """,
             self._tmp_path,
         )
-        labels, scales, kinds = load_channels(p)
-        self.assertEqual(labels[0], "L Thumb")
-        self.assertEqual(labels[6], "R Index")
-        self.assertEqual(labels[10], "trigger")
-        self.assertEqual(scales[6], 5.0)
-        self.assertEqual(kinds[6], "finger")
+        channels = load_channels(p)
+        self.assertEqual(channels[0].label, "L Thumb")
+        self.assertEqual(channels[6].label, "R Index")
+        self.assertEqual(channels[10].label, "trigger")
+        self.assertEqual(channels[6].scale, 5.0)
+        self.assertEqual(channels[6].kind, "finger")
+        self.assertEqual(channels[10].kind, "trigger")
 
     def test_duplicate_index_raises(self) -> None:
         p = self._write_toml(
@@ -88,12 +89,13 @@ class LoadChannelsTests(unittest.TestCase):
             """
             [labels]
             "MyChannel" = { index = 5 }
+            "trigger"   = { index = 10, kind = "trigger" }
             """,
             self._tmp_path,
         )
-        labels, _scales, _kinds = load_channels(p)
-        self.assertIn(5, labels)
-        self.assertEqual(labels[5], "MyChannel")
+        channels = load_channels(p)
+        self.assertIn(5, channels)
+        self.assertEqual(channels[5].label, "MyChannel")
 
     def test_emg_kind_parsed(self) -> None:
         p = self._write_toml(
@@ -102,20 +104,47 @@ class LoadChannelsTests(unittest.TestCase):
             "R Index" = { index = 0, scale = 5.0 }
             "EMG 1"   = { index = 11, scale = 1.0, kind = "emg" }
             "EMG 2"   = { index = 12, scale = 1.0, kind = "emg" }
+            "trigger" = { index = 10, kind = "trigger" }
             """,
             self._tmp_path,
         )
-        labels, scales, kinds = load_channels(p)
-        self.assertEqual(kinds[0], "finger")
-        self.assertEqual(kinds[11], "emg")
-        self.assertEqual(kinds[12], "emg")
-        self.assertEqual(scales[11], 1.0)
+        channels = load_channels(p)
+        self.assertEqual(channels[0].kind, "finger")
+        self.assertEqual(channels[11].kind, "emg")
+        self.assertEqual(channels[12].kind, "emg")
+        self.assertEqual(channels[11].scale, 1.0)
 
     def test_unknown_kind_rejected(self) -> None:
         p = self._write_toml(
             """
             [labels]
             "X" = { index = 0, kind = "nonsense" }
+            """,
+            self._tmp_path,
+        )
+        with self.assertRaises(ValueError):
+            load_channels(p)
+
+    def test_missing_trigger_rejected(self) -> None:
+        """A channels file with no trigger kind is rejected."""
+        p = self._write_toml(
+            """
+            [labels]
+            "F0" = { index = 0 }
+            "F1" = { index = 1 }
+            """,
+            self._tmp_path,
+        )
+        with self.assertRaises(ValueError):
+            load_channels(p)
+
+    def test_multiple_triggers_rejected(self) -> None:
+        """A channels file with more than one trigger kind is rejected."""
+        p = self._write_toml(
+            """
+            [labels]
+            "T0" = { index = 0, kind = "trigger" }
+            "T1" = { index = 1, kind = "trigger" }
             """,
             self._tmp_path,
         )

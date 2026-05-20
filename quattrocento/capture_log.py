@@ -43,8 +43,13 @@ class CaptureLogger:
             "trigger_sample": window.trigger_sample,
             "trigger_channel": window.meta.config.trigger_channel,
             "sample_rate_hz": window.meta.config.sample_rate_hz,
-            "channel_labels": {
-                str(k): v for k, v in window.meta.channel_labels.items()
+            "channels": {
+                str(k): {
+                    "label": info.label,
+                    "kind": info.kind,
+                    "scale": info.scale,
+                }
+                for k, info in window.meta.channels.items()
             },
             "baseline": (
                 window.meta.baseline.tolist()

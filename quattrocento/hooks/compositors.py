@@ -3,14 +3,14 @@ import logging
 import numpy as np
 
 from ..models import DataBatch, StreamMeta
-from .logic import _HoldInBandDetector, _LabJackPulse, _RampOnsetDetector
+from .logic import _HoldInBandDetector, LabJackPulse, _RampOnsetDetector
 from .ui import _ForceMeterDialog, _HoldTargetDialog
 
 logger = logging.getLogger("quattrocento.hooks")
 
 
 class PassedThresholdAnyFinger:
-    """Compositor: wires _RampOnsetDetector → _ForceMeterDialog → _LabJackPulse.
+    """Compositor: wires _RampOnsetDetector → _ForceMeterDialog → LabJackPulse.
 
     Stays inert until `set_active(True)`. On activation a small always-on-top
     dialog opens showing the max % MVC across all finger channels and a
@@ -26,7 +26,7 @@ class PassedThresholdAnyFinger:
     def __init__(
         self,
         finger_indices: list[int],
-        pulse: _LabJackPulse,
+        pulse: LabJackPulse,
         threshold_pct: float = 10.0,
         onset_floor_pct: float = 3.0,
         onset_dwell_s: float = 0.2,
@@ -154,7 +154,7 @@ class PassedThresholdAnyFinger:
 
 
 class HoldInTargetAnyFinger:
-    """Compositor: wires _HoldInBandDetector → _HoldTargetDialog → _LabJackPulse.
+    """Compositor: wires _HoldInBandDetector → _HoldTargetDialog → LabJackPulse.
 
     Stays inert until `set_active(True)`. On activation a small always-on-top
     dialog opens showing the max % MVC across all finger channels, the
@@ -170,7 +170,7 @@ class HoldInTargetAnyFinger:
     def __init__(
         self,
         finger_indices: list[int],
-        pulse: _LabJackPulse,
+        pulse: LabJackPulse,
         target_pct: float = 30.0,
         tolerance_rel: float = 0.20,
         dwell_s: float = 2.0,

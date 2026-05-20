@@ -5,7 +5,7 @@ import numpy as np
 
 from quattrocento.config import QuattrocentoConfig
 from quattrocento.controller import QuattrocentoController
-from quattrocento.models import DataBatch, StreamMeta
+from quattrocento.models import DataBatch, StreamMeta, ChannelInfo, ChannelKind, Channels
 from quattrocento.ui import _mvc_bin_color
 
 N_CHANNELS = 11
@@ -13,8 +13,15 @@ TRIGGER_CH = 10
 
 
 def _make_meta(config: QuattrocentoConfig) -> StreamMeta:
+    """Create StreamMeta using a unified channels dict with one trigger channel."""
+    parsed = {}
+    for i in range(N_CHANNELS):
+        if i == TRIGGER_CH:
+            parsed[i] = ChannelInfo(label=f"ch{i}", kind=ChannelKind.TRIGGER)
+        else:
+            parsed[i] = ChannelInfo(label=f"ch{i}", kind=ChannelKind.FINGER)
     return StreamMeta(
-        channel_labels={i: f"ch{i}" for i in range(N_CHANNELS)},
+        channels=Channels(parsed),
         config=config,
     )
 
@@ -138,6 +145,37 @@ class CalibrationToggleTests(unittest.TestCase):
         controller._on_baseline_toggled(False)
 
         self.assertEqual(controller._meta.baseline.shape, (N_CHANNELS,))
+
+
+class ChannelsTests(unittest.TestCase):
+    """Tests for Channels grouping behavior."""
+
+    def test_by_kind_groups_and_sorts(self) -> None:
+        """by_kind returns indices/labels sorted ascending by index, partitioned by kind."""
+        channels = Channels({
+            2: ChannelInfo(label="F1", kind=ChannelKind.FINGER),
+            0: ChannelInfo(label="F0", kind=ChannelKind.FINGER),
+            1: ChannelInfo(label="E0", kind=ChannelKind.EMG),
+            3: ChannelInfo(label="T0", kind=ChannelKind.TRIGGER),
+        })
+
+        fingers = channels.by_kind(ChannelKind.FINGER)
+        emgs = channels.by_kind(ChannelKind.EMG)
+        triggers = channels.by_kind(ChannelKind.TRIGGER)
+
+        self.assertEqual(fingers.indices, (0, 2))
+        self.assertEqual(fingers.labels, ("F0", "F1"))
+        self.assertEqual(emgs.indices, (1,))
+        self.assertEqual(emgs.labels, ("E0",))
+        self.assertEqual(triggers.indices, (3,))
+        self.assertEqual(triggers.labels, ("T0",))
+
+    def test_by_kind_returns_empty_group_for_missing_kind(self) -> None:
+        """by_kind returns an empty ChannelGroup when no channel has that kind."""
+        channels = Channels({0: ChannelInfo(label="F0", kind=ChannelKind.FINGER)})
+        emgs = channels.by_kind(ChannelKind.EMG)
+        self.assertEqual(emgs.indices, ())
+        self.assertEqual(emgs.labels, ())
 
 
 if __name__ == "__main__":

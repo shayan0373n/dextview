@@ -6,16 +6,24 @@ import numpy as np
 logger = logging.getLogger("quattrocento.hooks")
 
 
-class _LabJackPulse:
-    """Manages a LabJack T4 connection and fires a 5 ms TTL pulse on FIO4."""
+class LabJackPulse:
+    """Manages a LabJack T4 connection and fires a 5 ms TTL pulse on FIO4.
+
+    To avoid latency spikes on the first threshold crossing/fire (which could
+    violate the <10 ms latency spec due to LJM USB discovery delays), this
+    connection must be opened upfront on hook activation (via set_active(True)
+    in the compositors) rather than opened lazily during fire().
+    """
 
     def __init__(self) -> None:
         self._ljm = None
         self._handle = None
 
     def open(self) -> None:
-        """Open the LabJack T4 connection. No-op if already open, so safe to
-        call from multiple compositors sharing the same instance."""
+        """Open the LabJack T4 connection upfront on activation.
+        No-op if already open, so safe to call from multiple compositors
+        sharing the same instance.
+        """
         if self._handle is not None:
             return
         from labjack import ljm
@@ -30,7 +38,7 @@ class _LabJackPulse:
             self._ljm = None
 
     def fire(self) -> None:
-        """Fire a 5 ms TTL pulse on FIO4."""
+        """Fire a 5 ms TTL pulse on FIO4. Assumes open() has already been called."""
         self._ljm.eWriteName(self._handle, "FIO4", 1)  # type: ignore[union-attr]
         time.sleep(0.005)
         self._ljm.eWriteName(self._handle, "FIO4", 0)  # type: ignore[union-attr]

@@ -19,8 +19,8 @@ The log was produced via `--source rebroadcast`: data path was Quattrocento → 
 - **Architecture in current code**:
   - `controller.py:_on_timer_tick` is driven by `QTimer(ui_refresh_ms=30 ms)`.
   - `stream/direct.py:read_batch` drains whatever is in the OS socket buffer per tick.
-  - `hooks.py:PassedTenPercentRightIndex.__call__` runs on each batch; on first sample ≥ threshold it calls `_LabJackPulse.fire()`.
-  - `_LabJackPulse.fire()` does `eWriteName(FIO4, 1)` → `time.sleep(0.005)` → `eWriteName(FIO4, 0)`. TMS fires on the rising edge; the sleep + low write are pulse-width shaping and block the UI thread for 5 ms (affects subsequent triggers, not this one).
+  - `hooks.py:PassedTenPercentRightIndex.__call__` runs on each batch; on first sample ≥ threshold it calls `LabJackPulse.fire()`.
+  - `LabJackPulse.fire()` does `eWriteName(FIO4, 1)` → `time.sleep(0.005)` → `eWriteName(FIO4, 0)`. TMS fires on the rising edge; the sleep + low write are pulse-width shaping and block the UI thread for 5 ms (affects subsequent triggers, not this one).
 - **Sample rate options** are `(512, 2048, 5120, 10240)` Hz per `protocol.py`.
 
 ## What we're inferring (high confidence)

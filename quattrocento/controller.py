@@ -7,7 +7,9 @@ from numpy.typing import NDArray
 from PyQt5 import QtCore
 
 from .config import QuattrocentoConfig
-from .models import CapturedWindow, DataBatch, EventHook, Stream, StreamHook, StreamMeta
+from .models import (
+    CapturedWindow, ChannelKind, DataBatch, EventHook, Stream, StreamHook, StreamMeta,
+)
 from .processing import TriggerWindowProcessor, detect_onset
 from .ui import QuattrocentoMainWindow
 
@@ -136,8 +138,9 @@ class QuattrocentoController(QtCore.QObject):
         ):
             return
         display_channels = sorted(
-            (idx, label) for idx, label in self._meta.channel_labels.items()
-            if idx != self._config.trigger_channel
+            (idx, info.label)
+            for idx, info in self._meta.channels.items()
+            if info.kind != ChannelKind.TRIGGER
         )
         self._window.show_calibration_report(
             display_channels=display_channels,
@@ -278,14 +281,9 @@ class QuattrocentoController(QtCore.QObject):
 
     def _update_window_capture(self, captured: CapturedWindow) -> None:
         """Helper to deconstruct CapturedWindow and call the UI boundary."""
-        # Pre-calculate onsets for all fingers to pass across the boundary.
         onset_ms_list = []
-        # Get finger indices from window (we could also get them from meta if we had a mapping)
-        # But controller knows the config.
-        finger_indices = self._window._finger_channel_indices
+        finger_indices = captured.meta.channels.by_kind(ChannelKind.FINGER).indices
         for idx in finger_indices:
-            # We use the raw signals for onset detection.
-            # detect_onset expects signal, trigger_idx, sample_rate
             onset = detect_onset(
                 captured.batch.signals[:, idx],
                 captured.trigger_sample,

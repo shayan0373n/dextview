@@ -8,11 +8,10 @@ from PyQt5 import QtCore, QtWidgets
 
 from .capture_log import CaptureLogger
 from .channels import load_channels
-from .hooks import HoldInTargetAnyFinger, PassedThresholdAnyFinger
-from .hooks.logic import _LabJackPulse
+from .hooks import HoldInTargetAnyFinger, PassedThresholdAnyFinger, LabJackPulse
 from .config import QuattrocentoConfig
 from .controller import QuattrocentoController
-from .models import StreamMeta
+from .models import StreamMeta, ChannelKind, Channels
 from .processing import TriggerWindowProcessor
 from .protocol import (
     DEFAULT_INPUT_CONF2_BYTES,
@@ -61,16 +60,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         required=True,
         metavar="FILE",
         help=(
-            "TOML file defining channel labels and optionally trigger_channel. "
+            "TOML file defining channel labels, kinds, and scales. "
             "See quattrocento/channels_default.toml for format."
         ),
-    )
-    common.add_argument(
-        "--trigger-channel",
-        type=int,
-        required=True,
-        dest="trigger_channel",
-        help="Index of the trigger channel.",
     )
     common.add_argument(
         "--window-seconds",
@@ -166,28 +158,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def _validate_channel_indices(
-    channel_labels: dict[int, str],
-    trigger_channel: int,
+    channels: Channels,
     n_channels: int,
 ) -> None:
-    """Validate that channel indices and trigger channel are within range."""
-    for idx, label in channel_labels.items():
+    """Validate that channel indices are within range."""
+    for idx, info in channels.items():
         if idx >= n_channels:
             raise SystemExit(
-                f"Channel label {label!r} has index {idx} but stream only "
+                f"Channel label {info.label!r} has index {idx} but stream only "
                 f"has {n_channels} channels (indices 0–{n_channels - 1})."
             )
-    if trigger_channel >= n_channels:
-        raise SystemExit(
-            f"Trigger channel {trigger_channel} is out of range for a stream "
-            f"with {n_channels} channels (indices 0–{n_channels - 1})."
-        )
 
 
 def _build_real_stream(
     args: argparse.Namespace,
-    channel_labels: dict[int, str],
-    channel_scales: dict[int, float],
+    channels: Channels,
 ) -> tuple[DirectStream, StreamMeta]:
     """Build a DirectStream for a real Quattrocento device connection."""
     if args.host is None or args.port is None:
@@ -204,7 +189,7 @@ def _build_real_stream(
         raise SystemExit(str(exc)) from exc
 
     n_channels = NCH_BITS_TO_NUM_CHANNELS[nch_code]
-    _validate_channel_indices(channel_labels, args.trigger_channel, n_channels)
+    _validate_channel_indices(channels, n_channels)
 
     if args.conf2_config is not None:
         try:
@@ -216,13 +201,16 @@ def _build_real_stream(
     else:
         input_conf2_bytes = DEFAULT_INPUT_CONF2_BYTES
 
+    trigger_channel = channels.by_kind(ChannelKind.TRIGGER).indices[0]
+    channel_scales = {idx: ch.scale for idx, ch in channels.items()}
+
     config = QuattrocentoConfig(
         sample_rate_hz=args.sample_rate,
         n_channels=n_channels,
         window_seconds=args.window_seconds,
         window_offset_seconds=args.window_offset_seconds,
         trigger_threshold=args.trigger_threshold,
-        trigger_channel=args.trigger_channel,
+        trigger_channel=trigger_channel,
         channel_scales=channel_scales,
     )
     stream = DirectStream(
@@ -234,14 +222,13 @@ def _build_real_stream(
         rec_on=args.rec_on,
         input_conf2_bytes=input_conf2_bytes,
     )
-    meta = StreamMeta(channel_labels=channel_labels, config=config)
+    meta = StreamMeta(channels=channels, config=config)
     return stream, meta
 
 
 def _build_rebroadcast_stream(
     args: argparse.Namespace,
-    channel_labels: dict[int, str],
-    channel_scales: dict[int, float],
+    channels: Channels,
 ) -> tuple[RebroadcastStream, StreamMeta]:
     """Build a RebroadcastStream for connecting to a TCP stream (e.g., OT BioLab+)."""
     if args.host is None or args.port is None:
@@ -270,7 +257,10 @@ def _build_rebroadcast_stream(
         n_channels = known_nch
         sampling_rate_hz = known_rate
 
-    _validate_channel_indices(channel_labels, args.trigger_channel, n_channels)
+    _validate_channel_indices(channels, n_channels)
+
+    trigger_channel = channels.by_kind(ChannelKind.TRIGGER).indices[0]
+    channel_scales = {idx: ch.scale for idx, ch in channels.items()}
 
     config = QuattrocentoConfig(
         sample_rate_hz=sampling_rate_hz,
@@ -278,22 +268,23 @@ def _build_rebroadcast_stream(
         window_seconds=args.window_seconds,
         window_offset_seconds=args.window_offset_seconds,
         trigger_threshold=args.trigger_threshold,
-        trigger_channel=args.trigger_channel,
+        trigger_channel=trigger_channel,
         channel_scales=channel_scales,
     )
     stream = RebroadcastStream(config=config, host=args.host, port=args.port)
-    meta = StreamMeta(channel_labels=channel_labels, config=config)
+    meta = StreamMeta(channels=channels, config=config)
     return stream, meta
 
 
 def _build_proxy_stream(
     args: argparse.Namespace,
-    channel_labels: dict[int, str],
-    channel_scales: dict[int, float],
+    channels: Channels,
 ) -> tuple[ProxyStream, StreamMeta]:
     """Build a ProxyStream to sit between an upstream client and a device."""
     if args.host is None or args.port is None:
         raise SystemExit("--host and --port are required for --source=proxy (the device)")
+
+    trigger_channel = channels.by_kind(ChannelKind.TRIGGER).indices[0]
 
     try:
         stream = ProxyStream.listen_and_accept(
@@ -304,18 +295,18 @@ def _build_proxy_stream(
             window_seconds=args.window_seconds,
             window_offset_seconds=args.window_offset_seconds,
             trigger_threshold=args.trigger_threshold,
-            trigger_channel=args.trigger_channel,
+            trigger_channel=trigger_channel,
         )
     except (ConnectionError, ValueError) as exc:
         raise SystemExit(str(exc)) from exc
 
     try:
-        _validate_channel_indices(channel_labels, args.trigger_channel, stream.config.n_channels)
+        _validate_channel_indices(channels, stream.config.n_channels)
     except SystemExit:
         stream.close()
         raise
 
-    meta = StreamMeta(channel_labels=channel_labels, config=stream.config)
+    meta = StreamMeta(channels=channels, config=stream.config)
     return stream, meta
 
 
@@ -329,19 +320,11 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     try:
-        channel_labels, channel_scales, channel_kinds = load_channels(args.channels)
+        channels = load_channels(args.channels)
     except (OSError, ValueError) as exc:
         raise SystemExit(f"Failed to load channels file {args.channels!r}: {exc}") from exc
 
-    emg_channels = sorted(
-        (idx, channel_labels[idx])
-        for idx, kind in channel_kinds.items()
-        if kind == "emg"
-    )
-    finger_indices = sorted(
-        idx for idx, kind in channel_kinds.items()
-        if kind == "finger"
-    )
+    finger_indices = channels.by_kind(ChannelKind.FINGER).indices
 
     qt_app = QtWidgets.QApplication.instance()
     if qt_app is None:
@@ -353,23 +336,21 @@ def main(argv: list[str] | None = None) -> int:
         qt_app = QtWidgets.QApplication(sys.argv)
 
     if args.source == "real":
-        stream, meta = _build_real_stream(args, channel_labels, channel_scales)
+        stream, meta = _build_real_stream(args, channels)
     elif args.source == "rebroadcast":
-        stream, meta = _build_rebroadcast_stream(args, channel_labels, channel_scales)
+        stream, meta = _build_rebroadcast_stream(args, channels)
     else:
-        stream, meta = _build_proxy_stream(args, channel_labels, channel_scales)
+        stream, meta = _build_proxy_stream(args, channels)
 
     processor = TriggerWindowProcessor(stream.config)
 
     window = QuattrocentoMainWindow(
-        channel_labels=channel_labels,
-        trigger_channel=stream.config.trigger_channel,
+        channels=channels,
         sample_rate_hz=stream.config.sample_rate_hz,
         trigger_threshold=args.trigger_threshold,
-        emg_channels=emg_channels,
     )
     event_hooks = [CaptureLogger(args.log_dir)] if args.log_dir else []
-    pulse = _LabJackPulse()
+    pulse = LabJackPulse()
     threshold_hook = PassedThresholdAnyFinger(finger_indices=finger_indices, pulse=pulse)
     hold_hook = HoldInTargetAnyFinger(finger_indices=finger_indices, pulse=pulse)
     controller = QuattrocentoController(
@@ -377,9 +358,9 @@ def main(argv: list[str] | None = None) -> int:
         stream_hooks=[threshold_hook, hold_hook],
         event_hooks=event_hooks,
     )
-    controller.start()
     window.add_hook_toggle("Any Finger Threshold", threshold_hook.set_active)
     window.add_hook_toggle("Hold In Target", hold_hook.set_active)
+    controller.start()
 
     try:
         return qt_app.exec_()
