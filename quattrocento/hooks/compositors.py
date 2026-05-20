@@ -1,4 +1,5 @@
 import logging
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -25,7 +26,7 @@ class PassedThresholdAnyFinger:
 
     def __init__(
         self,
-        finger_indices: list[int],
+        finger_indices: Sequence[int],
         pulse: LabJackPulse,
         threshold_pct: float = 10.0,
         onset_floor_pct: float = 3.0,
@@ -142,8 +143,8 @@ class PassedThresholdAnyFinger:
             if self._meter is not None:
                 self._meter.set_status("Released — waiting for next onset")
 
-        if crossing_t is not None:
-            elapsed = crossing_t - self._detector.onset_t  # onset_t persists after fire
+        if crossing_t is not None and new_onset is not None:
+            elapsed = crossing_t - new_onset
             logger.info(
                 f"PASSED  (crossing at t={crossing_t:.3f}s, "
                 f"elapsed since onset {elapsed:.3f}s)"
@@ -169,7 +170,7 @@ class HoldInTargetAnyFinger:
 
     def __init__(
         self,
-        finger_indices: list[int],
+        finger_indices: Sequence[int],
         pulse: LabJackPulse,
         target_pct: float = 30.0,
         tolerance_rel: float = 0.20,

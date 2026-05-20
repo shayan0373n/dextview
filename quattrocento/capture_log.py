@@ -61,6 +61,11 @@ class CaptureLogger:
                 if window.meta.peak is not None
                 else None
             ),
+            "empty": (
+                window.meta.empty.tolist()
+                if window.meta.empty is not None
+                else None
+            ),
             "timestamps": window.batch.timestamps.tolist(),
             "signals": window.batch.signals.tolist(),
         }

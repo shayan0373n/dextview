@@ -1,5 +1,6 @@
 import logging
 import time
+from typing import Any
 
 import numpy as np
 
@@ -16,8 +17,8 @@ class LabJackPulse:
     """
 
     def __init__(self) -> None:
-        self._ljm = None
-        self._handle = None
+        self._ljm: Any = None
+        self._handle: Any = None
 
     def open(self) -> None:
         """Open the LabJack T4 connection upfront on activation.
@@ -33,15 +34,15 @@ class LabJackPulse:
     def close(self) -> None:
         """Close the LabJack connection."""
         if self._handle is not None:
-            self._ljm.close(self._handle)  # type: ignore[union-attr]
+            self._ljm.close(self._handle)
             self._handle = None
             self._ljm = None
 
     def fire(self) -> None:
         """Fire a 5 ms TTL pulse on FIO4. Assumes open() has already been called."""
-        self._ljm.eWriteName(self._handle, "FIO4", 1)  # type: ignore[union-attr]
+        self._ljm.eWriteName(self._handle, "FIO4", 1)
         time.sleep(0.005)
-        self._ljm.eWriteName(self._handle, "FIO4", 0)  # type: ignore[union-attr]
+        self._ljm.eWriteName(self._handle, "FIO4", 0)
 
 
 class _RampOnsetDetector:

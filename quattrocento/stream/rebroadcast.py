@@ -30,9 +30,9 @@ class RebroadcastStream:
 
     def read_batch(self) -> DataBatch:
         """Reads and parses the latest chunk of data from the rebroadcast server."""
-        self._ensure_connected()
+        sock = self._ensure_connected()
         try:
-            raw = drain_socket(self._socket)
+            raw = drain_socket(sock)
         except ConnectionError:
             self._close_socket()
             raise
@@ -50,10 +50,10 @@ class RebroadcastStream:
             pass
         self._close_socket()
 
-    def _ensure_connected(self) -> None:
-        """Establishes the connection and sends startTX if not déjà vu."""
+    def _ensure_connected(self) -> socket.socket:
+        """Establishes the connection (if needed) and returns the live socket."""
         if self._socket is not None:
-            return
+            return self._socket
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             sock.settimeout(3.0)
@@ -70,6 +70,7 @@ class RebroadcastStream:
             sock.close()
             raise
         self._socket = sock
+        return sock
 
     def _close_socket(self) -> None:
         """Closes the socket and clears the reference."""

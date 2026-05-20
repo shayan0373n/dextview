@@ -1,6 +1,7 @@
 from collections import deque
 from dataclasses import replace
 from collections.abc import Sequence
+from typing import TypedDict
 
 import numpy as np
 from numpy.typing import NDArray
@@ -14,6 +15,14 @@ from .processing import TriggerWindowProcessor, detect_onset
 from .ui import QuattrocentoMainWindow
 
 _DEFAULT_MAX_HISTORY = 200
+
+
+class _CalibrationArrays(TypedDict, total=False):
+    """Names the optional calibration arrays accepted by numpy.savez."""
+
+    baseline: NDArray[np.float64]
+    peak: NDArray[np.float64]
+    empty: NDArray[np.float64]
 
 
 class QuattrocentoController(QtCore.QObject):
@@ -151,7 +160,7 @@ class QuattrocentoController(QtCore.QObject):
 
     def _on_save_calibration(self, path: str) -> None:
         """Saves non-None calibration arrays (zero/rest/MVC) to a .npz file."""
-        arrays: dict[str, NDArray[np.float64]] = {}
+        arrays: _CalibrationArrays = {}
         if self._meta.baseline is not None:
             arrays["baseline"] = self._meta.baseline
         if self._meta.peak is not None:

@@ -114,34 +114,37 @@ class ProxyStream:
 
     def read_batch(self) -> DataBatch:
         """Forwards control bytes and mirrors data between client and origin."""
+        client_sock = self._client_sock
+        origin_sock = self._origin_sock
+        if client_sock is None or origin_sock is None:
+            raise ConnectionError("Stream is closed")
+
         # Forward any control bytes from the client to the origin.
-        if self._client_sock is not None:
-            try:
-                ctrl = drain_socket(self._client_sock)
-                if ctrl:
-                    self._origin_sock.sendall(ctrl)
-            except ConnectionError:
-                self._close_sockets()
-                raise
+        try:
+            ctrl = drain_socket(client_sock)
+            if ctrl:
+                origin_sock.sendall(ctrl)
+        except ConnectionError:
+            self._close_sockets()
+            raise
 
         # Drain the origin; process locally and mirror to the client.
         try:
-            raw = drain_socket(self._origin_sock)
+            raw = drain_socket(origin_sock)
         except ConnectionError:
             self._close_sockets()
             raise
 
         if raw:
             self._parser.feed(raw)
-            if self._client_sock is not None:
-                try:
-                    # OSError (incl. BlockingIOError) here means the client's
-                    # send buffer is full or the client closed — fatal without
-                    # a write-side buffer, so treat as disconnect.
-                    self._client_sock.sendall(raw)
-                except OSError:
-                    self._close_sockets()
-                    raise ConnectionError("Client disconnected during forwarding")
+            try:
+                # OSError (incl. BlockingIOError) here means the client's
+                # send buffer is full or the client closed — fatal without
+                # a write-side buffer, so treat as disconnect.
+                client_sock.sendall(raw)
+            except OSError:
+                self._close_sockets()
+                raise ConnectionError("Client disconnected during forwarding")
 
         return self._parser.drain()
 

@@ -11,7 +11,7 @@ from .channels import load_channels
 from .hooks import HoldInTargetAnyFinger, PassedThresholdAnyFinger, LabJackPulse
 from .config import QuattrocentoConfig
 from .controller import QuattrocentoController
-from .models import StreamMeta, ChannelKind, Channels
+from .models import Stream, StreamMeta, ChannelKind, Channels
 from .processing import TriggerWindowProcessor
 from .protocol import (
     DEFAULT_INPUT_CONF2_BYTES,
@@ -237,25 +237,20 @@ def _build_rebroadcast_stream(
     nch_arg = args.n_channels
     rate_arg = args.sample_rate if args.sample_rate is not None else "auto"
 
-    detect_nch = nch_arg is None or nch_arg == "auto"
-    detect_rate = rate_arg == "auto"
-    known_nch = nch_arg if isinstance(nch_arg, int) else None
-    known_rate = rate_arg if isinstance(rate_arg, int) else None
-
-    if detect_nch or detect_rate:
+    if isinstance(nch_arg, int) and isinstance(rate_arg, int):
+        n_channels = nch_arg
+        sampling_rate_hz = rate_arg
+    else:
         detected = detect_stream_params(
             args.host,
             args.port,
-            detect_nch=detect_nch,
-            detect_rate=detect_rate,
-            known_nch=known_nch,
-            known_rate=known_rate,
+            detect_nch=not isinstance(nch_arg, int),
+            detect_rate=not isinstance(rate_arg, int),
+            known_nch=nch_arg if isinstance(nch_arg, int) else None,
+            known_rate=rate_arg if isinstance(rate_arg, int) else None,
         )
         n_channels = detected.n_channels
         sampling_rate_hz = detected.sampling_rate_hz
-    else:
-        n_channels = known_nch
-        sampling_rate_hz = known_rate
 
     _validate_channel_indices(channels, n_channels)
 
@@ -335,6 +330,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         qt_app = QtWidgets.QApplication(sys.argv)
 
+    stream: Stream
     if args.source == "real":
         stream, meta = _build_real_stream(args, channels)
     elif args.source == "rebroadcast":

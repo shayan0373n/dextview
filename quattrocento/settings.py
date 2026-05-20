@@ -12,10 +12,7 @@ from .protocol import (
     SIDE_NAME_TO_BITS,
 )
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # pragma: no cover
-    import tomli as tomllib
+import tomllib
 
 
 def _normalize_token(value: Any) -> str:

@@ -797,17 +797,17 @@ class EmgMonitorWindow(QtWidgets.QWidget):
             else:
                 region.setVisible(False)
 
-        bandpass_active = self._filter_enabled and self._filter_sos is not None
-        notch_active = self._notch_enabled and self._notch_sos is not None
+        bandpass_sos = self._filter_sos if self._filter_enabled else None
+        notch_sos = self._notch_sos if self._notch_enabled else None
 
         emg_columns: list[np.ndarray] = []
         for local_idx, curve in enumerate(self._curves):
             ch_idx = self._channel_indices[local_idx]
             emg = sig[:, ch_idx]
-            if bandpass_active:
-                emg = sosfiltfilt(self._filter_sos, emg, axis=0)
-            if notch_active:
-                emg = sosfiltfilt(self._notch_sos, emg, axis=0)
+            if bandpass_sos is not None:
+                emg = sosfiltfilt(bandpass_sos, emg, axis=0)
+            if notch_sos is not None:
+                emg = sosfiltfilt(notch_sos, emg, axis=0)
             emg_columns.append(emg)
             curve.setData(relative_time, emg)
 
@@ -943,7 +943,8 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._pretrigger_baseline_button.setObjectName("preTrigRestButton")
         self._pretrigger_baseline_button.setCheckable(True)
         self._use_pretrigger_baseline: bool = False
-        self._hook_controls_layout: QtWidgets.QHBoxLayout | None = None
+        self._hook_controls_layout = QtWidgets.QHBoxLayout()
+        self._hook_controls_layout.setSpacing(8)
         self._hooks_menu_button: QtWidgets.QToolButton | None = None
         self._raw_plot_widgets: list[pg.PlotWidget] = []
         self._raw_curves: list[pg.PlotDataItem] = []
@@ -1190,8 +1191,6 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         self._pretrigger_baseline_button.setToolTip(
             "Use the pre-trigger window of each displayed event as its display baseline"
         )
-        self._hook_controls_layout = QtWidgets.QHBoxLayout()
-        self._hook_controls_layout.setSpacing(8)
         navigation_layout.addWidget(self._previous_button)
         navigation_layout.addWidget(self._next_button)
         navigation_layout.addWidget(self._event_position_label)
@@ -1744,7 +1743,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
         # % MVC mode: normalize signals; Raw mode: normalize by global max MVC span if
         # calibrated, otherwise subtract baseline or show raw.
         raw_mvc_span: float | None = None  # global max span used for raw-mode ref lines
-        if self._show_mvc and has_cal:
+        if self._show_mvc and display_baseline is not None and peak is not None:
             span = peak - display_baseline
             safe_span = np.where(span != 0, span, 1.0)
             sig = (sig - display_baseline) / safe_span * 100.0
@@ -1752,7 +1751,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             if empty is not None:
                 zero_positions = (empty - display_baseline) / safe_span * 100.0
         else:
-            if has_cal:
+            if display_baseline is not None and peak is not None:
                 span = peak - display_baseline
                 max_span = float(np.max(span[self._finger_channel_indices]))
                 raw_mvc_span = max_span if max_span != 0 else 1.0
@@ -1794,7 +1793,12 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
             peak_ref = self._mvc_ref_lines[local_idx]
             show_ref = not self._show_mvc and has_cal
             peak_ref.setVisible(show_ref)
-            if show_ref and raw_mvc_span is not None:
+            if (
+                show_ref
+                and peak is not None
+                and display_baseline is not None
+                and raw_mvc_span is not None
+            ):
                 finger_span = float(peak[ch_idx] - display_baseline[ch_idx])
                 peak_ref.setPos(finger_span / raw_mvc_span * 100.0)
 
