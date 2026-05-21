@@ -146,11 +146,31 @@ Open these *before* starting captures so you can confirm the signal looks right.
 
 ## 7. Logging Captures
 
-*If you launched with `--log-dir`, every captured event is written to disk as JSON.*
+When `--log-dir` is set, DextView writes every captured trigger event to JSON at `<log-dir>/session_<timestamp>/event_NNNNN.json`. Pass `--log-dir` for real sessions.
 
-- **Where:** `<log-dir>/session_<timestamp>/event_NNNNN.json`.
-- **What's in each file:** trigger timestamp/sample index, device config, channel metadata, calibration arrays, full timestamp + signal arrays.
-- **Recommendation:** always pass `--log-dir` for real sessions, even if you don't think you'll need the data — it's cheap insurance.
+Each event JSON contains:
+- Trigger timestamp and sample index.
+- Device configuration and channel metadata (labels, scales, kinds).
+- Baseline, MVC, and zero calibration arrays at the time of capture.
+- Full timestamp and signal arrays for the captured window.
+
+### 7.1 Physical Unit Scaling
+Logged signal arrays contain 16-bit signed integers. Convert to physical units with:
+
+$$
+\text{Signal}_{\text{physical}} = \frac{\text{Raw}_{\text{int16}}}{32768} \times \text{scale}
+$$
+
+where `scale` is the channel-specific conversion factor from the `--channels` TOML.
+
+### 7.2 MVC Normalization
+Once rest and MVC calibrations are complete, normalized force is:
+
+$$
+\text{Force}_{(\%\text{ MVC})} = \frac{\text{Force}_{\text{physical}} - \text{Baseline}_{\text{physical}}}{\text{Peak}_{\text{physical}} - \text{Baseline}_{\text{physical}}} \times 100
+$$
+
+Plot readouts and threshold hooks use this normalized value.
 
 ---
 
@@ -176,3 +196,21 @@ Open these *before* starting captures so you can confirm the signal looks right.
 - **Trigger** — an analog event (AUX channel crossing threshold) that initiates a capture.
 - **AUX / Accessory channels** — the last channels in the device stream; AUX (16) come before accessory (8) in direct/proxy mode.
 - **Hook** — a closed-loop rule that emits a TTL pulse when a force condition is met.
+
+---
+
+## 10. CLI Reference
+
+| Flag | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--source` | `str` | *Required* | Data source type: `real`, `rebroadcast`, or `proxy`. |
+| `--channels` | `str` | *Required* | Path to the TOML channel mapping file. |
+| `--host` | `str` | `None` | TCP hostname/IP for the device or rebroadcast server. |
+| `--port` | `int` | `None` | TCP port for the device or rebroadcast server. |
+| `--window-seconds` | `float` | `5.0` | Total length in seconds of the event-captured window. |
+| `--window-offset` | `float` | `0.0` | Pre-trigger offset in seconds (e.g., `-1.0` to capture 1.0s before the trigger). |
+| `--trigger-threshold`| `float` | `0.5` | Threshold for detecting manual analog trigger events (physical units). |
+| `--sample-rate` | `int/str`| `None` | Sampling rate in Hz (e.g., `2048`, `10244`). `auto` for rebroadcast. |
+| `--n-channels` | `int/str`| `None` | Number of channels per frame. `auto` for rebroadcast. |
+| `--log-dir` | `str` | `None` | Directory path where captured events will be written as JSON. |
+| `--conf2-config` | `str` | `None` | Optional hardware input-block settings file (real source only). |

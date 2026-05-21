@@ -25,8 +25,8 @@ Make sure you have [Conda](https://docs.conda.io/en/latest/) or a Python virtual
 ### Quick Setup
 1.  **Clone the repository** and navigate to the project directory:
     ```bash
-    git clone https://github.com/shayan0373n/pyquattrocento.git
-    cd pyquattrocento
+    git clone https://github.com/shayan0373n/dextview.git
+    cd dextview
     ```
 
 2.  **Activate your environment** (e.g., using `dexterity`):
@@ -89,47 +89,7 @@ dextview --source rebroadcast \
          --host 127.0.0.1 --port 31000
 ```
 
-### Flags
-Run `dextview --help` for the complete list:
-
-| Flag | Type | Default | Description |
-| :--- | :--- | :--- | :--- |
-| `--source` | `str` | *Required* | Data source type: `real`, `rebroadcast`, or `proxy`. |
-| `--channels` | `str` | *Required* | Path to the TOML channel mapping file. |
-| `--host` | `str` | `None` | TCP hostname/IP for the device or rebroadcast server. |
-| `--port` | `int` | `None` | TCP port for the device or rebroadcast server. |
-| `--window-seconds` | `float` | `5.0` | Total length in seconds of the event-captured window. |
-| `--window-offset` | `float` | `0.0` | Pre-trigger offset in seconds (e.g., `-1.0` to capture 1.0s before the trigger). |
-| `--trigger-threshold`| `float` | `0.5` | Threshold for detecting manual analog trigger events (physical units). |
-| `--sample-rate` | `int/str`| `None` | Sampling rate in Hz (e.g., `2048`, `10244`). `auto` for rebroadcast. |
-| `--n-channels` | `int/str`| `None` | Number of channels per frame. `auto` for rebroadcast. |
-| `--log-dir` | `str` | `None` | Directory path where captured events will be written as JSON. |
-| `--conf2-config` | `str` | `None` | Optional hardware input-block settings file (real source only). |
-
----
-
-## Signal Conversions & Scaling
-
-### Physical Unit Scaling
-Raw data is streamed as 16-bit signed integers. They are scaled into physical units by:
-$$\text{Signal}_{\text{physical}} = \frac{\text{Raw}_{\text{int16}}}{32768} \times \text{scale}$$
-Where `scale` is the channel-specific conversion factor defined in your `--channels` TOML.
-
-### MVC Normalization
-When rest and MVC calibrations are completed, the normalized force is calculated as:
-$$\text{Force}_{(\%\text{ MVC})} = \frac{\text{Force}_{\text{physical}} - \text{Baseline}_{\text{physical}}}{\text{Peak}_{\text{physical}} - \text{Baseline}_{\text{physical}}} \times 100$$
-Plot readouts and threshold hooks use this normalized value.
-
----
-
-## Event Log Format
-
-If launched with `--log-dir`, DextView writes one JSON file per captured trigger event to `<log-dir>/session_<timestamp>/event_NNNNN.json`. Each file contains:
-
-- Trigger timestamp and sample index.
-- Device configuration and channel metadata (labels, scales, kinds).
-- Baseline, MVC, and zero calibration arrays at the time of capture.
-- Full timestamp and signal arrays for the captured window.
+Run `dextview --help` for the full flag list.
 
 ---
 
