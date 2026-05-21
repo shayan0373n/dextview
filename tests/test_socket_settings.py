@@ -1,8 +1,8 @@
 import unittest
 from pathlib import Path
 
-from quattrocento.protocol import DEFAULT_CONF2_BYTE, INPUT_BLOCK_NAMES
-from quattrocento.settings import load_input_conf2_bytes
+from dextview.protocol import DEFAULT_CONF2_BYTE, INPUT_BLOCK_NAMES
+from dextview.settings import load_input_conf2_bytes
 
 
 class LoadInputConf2BytesTests(unittest.TestCase):

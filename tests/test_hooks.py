@@ -3,10 +3,10 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from quattrocento.config import QuattrocentoConfig
-from quattrocento.hooks import HoldInTargetAnyFinger, PassedThresholdAnyFinger
-from quattrocento.hooks.logic import _HoldInBandDetector, _RampOnsetDetector
-from quattrocento.models import DataBatch, StreamMeta, ChannelInfo, ChannelKind, Channels
+from dextview.config import DextViewConfig
+from dextview.hooks import HoldInTargetAnyFinger, PassedThresholdAnyFinger
+from dextview.hooks.logic import _HoldInBandDetector, _RampOnsetDetector
+from dextview.models import DataBatch, StreamMeta, ChannelInfo, ChannelKind, Channels
 
 
 def _detector(
@@ -44,7 +44,7 @@ def _meta(rest: float = 0.0, mvc_max: float = 100.0) -> StreamMeta:
     })
     return StreamMeta(
         channels=channels,
-        config=QuattrocentoConfig(sample_rate_hz=2, n_channels=2, trigger_channel=1),
+        config=DextViewConfig(sample_rate_hz=2, n_channels=2, trigger_channel=1),
         baseline=np.array([rest, 0.0]),
         peak=np.array([mvc_max, 1.0]),
     )
@@ -250,7 +250,7 @@ class CompositorCalibrationTests(unittest.TestCase):
                 0: ChannelInfo(label="R Index", kind=ChannelKind.FINGER),
                 1: ChannelInfo(label="trigger", kind=ChannelKind.TRIGGER),
             }),
-            config=QuattrocentoConfig(sample_rate_hz=2, n_channels=2, trigger_channel=1),
+            config=DextViewConfig(sample_rate_hz=2, n_channels=2, trigger_channel=1),
             baseline=None,
             peak=np.array([100.0, 1.0]),
         )

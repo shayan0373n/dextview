@@ -3,7 +3,7 @@ from dataclasses import dataclass
 from collections.abc import Iterator, Mapping
 from typing import Protocol
 
-from .config import QuattrocentoConfig
+from .config import DextViewConfig
 
 import numpy as np
 from numpy.typing import NDArray
@@ -106,7 +106,7 @@ class StreamMeta:
     """
 
     channels: Channels
-    config: QuattrocentoConfig
+    config: DextViewConfig
     baseline: NDArray[np.float64] | None = None  # (n_channels,)
     peak: NDArray[np.float64] | None = None       # (n_channels,)
     empty: NDArray[np.float64] | None = None      # (n_channels,) — no-contact reference, display only
@@ -131,7 +131,7 @@ class Stream(Protocol):
     """Structural interface satisfied by all stream types."""
 
     @property
-    def config(self) -> QuattrocentoConfig:
+    def config(self) -> DextViewConfig:
         """The runtime configuration of the stream."""
         ...
 

@@ -7,12 +7,12 @@ import numpy as np
 from numpy.typing import NDArray
 from PyQt5 import QtCore
 
-from .config import QuattrocentoConfig
+from .config import DextViewConfig
 from .models import (
     CapturedWindow, ChannelKind, DataBatch, EventHook, Stream, StreamHook, StreamMeta,
 )
 from .processing import TriggerWindowProcessor, detect_onset
-from .ui import QuattrocentoMainWindow
+from .ui import DextViewMainWindow
 
 _DEFAULT_MAX_HISTORY = 200
 
@@ -25,15 +25,15 @@ class _CalibrationArrays(TypedDict, total=False):
     empty: NDArray[np.float64]
 
 
-class QuattrocentoController(QtCore.QObject):
+class DextViewController(QtCore.QObject):
     """Coordinate stream polling, trigger processing, and UI updates."""
 
     def __init__(
         self,
-        config: QuattrocentoConfig,
+        config: DextViewConfig,
         stream: Stream,
         processor: TriggerWindowProcessor,
-        window: QuattrocentoMainWindow,
+        window: DextViewMainWindow,
         meta: StreamMeta,
         max_history: int = _DEFAULT_MAX_HISTORY,
         stream_hooks: Sequence[StreamHook] = (),

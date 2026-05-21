@@ -3,16 +3,16 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from quattrocento.config import QuattrocentoConfig
-from quattrocento.controller import QuattrocentoController
-from quattrocento.models import DataBatch, StreamMeta, ChannelInfo, ChannelKind, Channels
-from quattrocento.ui import _mvc_bin_color
+from dextview.config import DextViewConfig
+from dextview.controller import DextViewController
+from dextview.models import DataBatch, StreamMeta, ChannelInfo, ChannelKind, Channels
+from dextview.ui import _mvc_bin_color
 
 N_CHANNELS = 11
 TRIGGER_CH = 10
 
 
-def _make_meta(config: QuattrocentoConfig) -> StreamMeta:
+def _make_meta(config: DextViewConfig) -> StreamMeta:
     """Create StreamMeta using a unified channels dict with one trigger channel."""
     parsed = {}
     for i in range(N_CHANNELS):
@@ -26,12 +26,12 @@ def _make_meta(config: QuattrocentoConfig) -> StreamMeta:
     )
 
 
-def _make_controller() -> QuattrocentoController:
+def _make_controller() -> DextViewController:
     processor = MagicMock()
     processor.is_capturing = False
-    config = QuattrocentoConfig(n_channels=N_CHANNELS)
+    config = DextViewConfig(n_channels=N_CHANNELS)
     meta = _make_meta(config)
-    return QuattrocentoController(
+    return DextViewController(
         config=config,
         stream=MagicMock(),
         processor=processor,

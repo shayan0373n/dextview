@@ -4,7 +4,7 @@ from typing import Any
 
 import numpy as np
 
-logger = logging.getLogger("quattrocento.hooks")
+logger = logging.getLogger("dextview.hooks")
 
 
 class LabJackPulse:

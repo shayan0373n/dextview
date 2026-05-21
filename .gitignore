@@ -2,9 +2,11 @@
 __pycache__
 .pytest_cache
 .mypy_cache
+.git
 logs/
 .claude/
 .antigravitycli/
 *.diff
 *.npz
 artefacts/
+*.egg-info

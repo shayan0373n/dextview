@@ -4,15 +4,15 @@ import unittest
 
 import numpy as np
 
-from quattrocento.config import QuattrocentoConfig
-from quattrocento.protocol import (
+from dextview.config import DextViewConfig
+from dextview.protocol import (
     NCH_BITS_TO_NUM_CHANNELS,
     StartCommand,
     build_start_command,
     build_stop_command,
     parse_start_command,
 )
-from quattrocento.stream.proxy import ProxyStream
+from dextview.stream.proxy import ProxyStream
 
 
 # ---------------------------------------------------------------------------
@@ -22,7 +22,7 @@ from quattrocento.stream.proxy import ProxyStream
 class TestParseStartCommand(unittest.TestCase):
     def _round_trip(self, fsamp, nch_code, decimation, rec_on):
         n_channels = NCH_BITS_TO_NUM_CHANNELS[nch_code]
-        config = QuattrocentoConfig(sample_rate_hz=fsamp, n_channels=n_channels)
+        config = DextViewConfig(sample_rate_hz=fsamp, n_channels=n_channels)
         encoded = build_start_command(
             decimation_enabled=decimation,
             rec_on=rec_on,
@@ -89,7 +89,7 @@ class TestProxyStream(unittest.TestCase):
     def setUp(self):
         self.n_channels = 120
         self.fsamp = 512
-        self.config = QuattrocentoConfig(
+        self.config = DextViewConfig(
             sample_rate_hz=self.fsamp,
             n_channels=self.n_channels,
         )

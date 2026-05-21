@@ -8,7 +8,7 @@ from numpy.typing import NDArray
 
 from .protocol import SUPPORTED_SAMPLE_RATES
 
-logger = logging.getLogger("quattrocento.rebroadcast_detect")
+logger = logging.getLogger("dextview.rebroadcast_detect")
 
 POSSIBLE_CHANNEL_COUNTS = tuple(range(8, 409))
 DEFAULT_N_CHANNELS = 408

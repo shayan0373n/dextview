@@ -2,15 +2,15 @@ import unittest
 
 import numpy as np
 
-from quattrocento.config import QuattrocentoConfig
-from quattrocento.stream.direct import DirectStream
-from quattrocento.stream.parser import FrameParser
+from dextview.config import DextViewConfig
+from dextview.stream.direct import DirectStream
+from dextview.stream.parser import FrameParser
 
 
 class TestFrameParser(unittest.TestCase):
     def setUp(self):
         self.n_channels = 408
-        self.config = QuattrocentoConfig(sample_rate_hz=512, n_channels=self.n_channels)
+        self.config = DextViewConfig(sample_rate_hz=512, n_channels=self.n_channels)
         self.parser = FrameParser(self.config)
 
     def test_buffer_capping_preserves_frame_alignment(self):
@@ -48,7 +48,7 @@ class TestFrameParser(unittest.TestCase):
 class TestDirectStream(unittest.TestCase):
     def setUp(self):
         self.n_channels = 408
-        self.config = QuattrocentoConfig(sample_rate_hz=512, n_channels=self.n_channels)
+        self.config = DextViewConfig(sample_rate_hz=512, n_channels=self.n_channels)
         self.stream = DirectStream(
             self.config,
             host="169.254.1.10",

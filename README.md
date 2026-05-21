@@ -1,9 +1,9 @@
-Quattrocento Triggered Force Application
+DextView Triggered Force Application
 
 A modular GUI application for capturing and analyzing force sensor data from an OT Bioelettronica Quattrocento stream.
 
-- `run_quattrocento.py`
-- package: `quattrocento/`
+- `run_dextview.py`
+- package: `dextview/`
 
 ## Architecture Layers
 
@@ -25,20 +25,20 @@ The application is structured logically from top to bottom:
 Run the application with:
 
 ```
-python run_quattrocento.py --source real \
+python run_dextview.py --source real \
     --channels configs/channels_default.toml \
     --trigger-channel 10 \
     --host <device-ip> --port <device-port> \
     --sample-rate 2048 --n-channels 16
 ```
 ```
-python run_quattrocento.py --source rebroadcast \
+python run_dextview.py --source rebroadcast \
     --channels configs/channels_default.toml \
     --trigger-channel 10 \
     --host <host> --port <port>
 ```
 ```
-python run_quattrocento.py --source proxy \
+python run_dextview.py --source proxy \
     --channels configs/channels_default.toml \
     --trigger-channel 10 \
     --host <device-ip> --port <device-port>
@@ -50,7 +50,7 @@ python run_quattrocento.py --source proxy \
    `python run_simulator.py`
 2. Start the main app in another:
    ```
-   python run_quattrocento.py --source rebroadcast \
+   python run_dextview.py --source rebroadcast \
        --channels configs/channels_default.toml \
        --trigger-channel 10 \
        --host 127.0.0.1 --port 31000
@@ -64,7 +64,7 @@ The application features:
 - Event history with navigation (Prev/Next buttons or Left/Right arrow keys).
 - Real-time visualization of raw finger forces and peak force ranges.
 
-Run `python run_quattrocento.py --help` for the full flag reference.
+Run `python run_dextview.py --help` for the full flag reference.
 
 ## Channel configuration
 

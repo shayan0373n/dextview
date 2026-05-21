@@ -3,7 +3,7 @@
 #
 # Usage:
 #   python run_simulator.py
-#   python run_quattrocento.py --source=rebroadcast --host=127.0.0.1 --port=31000 \
+#   python run_dextview.py --source=rebroadcast --host=127.0.0.1 --port=31000 \
 #       --channels=configs/channels_default.toml --log-dir=./capture_logs
 
 [labels]

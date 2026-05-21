@@ -2,7 +2,7 @@ from dataclasses import dataclass
 
 
 @dataclass(slots=True)
-class QuattrocentoConfig:
+class DextViewConfig:
     """Runtime configuration for stream processing and GUI update cadence."""
 
     sample_rate_hz: int = 512

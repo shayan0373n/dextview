@@ -1,4 +1,4 @@
-from quattrocento.app import main
+from dextview.app import main
 
 
 if __name__ == "__main__":

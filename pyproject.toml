@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "quattrocento"
+name = "dextview"
 version = "0.1.0"
 description = "Trigger-based force capture and analysis for OT Bioelettronica Quattrocento streams."
 readme = "README.md"
@@ -18,13 +18,13 @@ dependencies = [
 ]
 
 [project.scripts]
-quattrocento = "quattrocento.app:main"
+dextview = "dextview.app:main"
 
 [tool.setuptools.packages.find]
-include = ["quattrocento*"]
+include = ["dextview*"]
 
 [tool.setuptools.package-data]
-quattrocento = ["*.toml"]
+dextview = ["*.toml"]
 
 [tool.mypy]
 

@@ -2,10 +2,10 @@ import logging
 
 import numpy as np
 from numpy.typing import NDArray
-from .config import QuattrocentoConfig
+from .config import DextViewConfig
 from .models import CapturedWindow, DataBatch, StreamMeta
 
-logger = logging.getLogger("quattrocento.processing")
+logger = logging.getLogger("dextview.processing")
 
 # These thresholds need empirical validation against real EMG/force data.
 _ONSET_SD_MULTIPLIER: float = 5.0   # SD multiples above/below pre-trigger mean
@@ -52,7 +52,7 @@ def detect_onset(
 class TriggerWindowProcessor:
     """Detect rising AUX-in edges and collect fixed post-trigger windows."""
 
-    def __init__(self, config: QuattrocentoConfig) -> None:
+    def __init__(self, config: DextViewConfig) -> None:
         self._post_samples = config.post_trigger_samples
         self._pre_samples = config.pre_trigger_samples
         self._total_samples = config.total_window_samples

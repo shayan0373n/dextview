@@ -1,6 +1,6 @@
 """Standalone TCP server that mimics the OT BioLab+ rebroadcast stream.
 
-Run with `python -m quattrocento.simulator` to serve synthetic Quattrocento-
+Run with `python -m dextview.simulator` to serve synthetic Quattrocento-
 format data on a local port. The main app, in `--source=rebroadcast` mode,
 can then connect to this simulator instead of the real device for demos and
 local development.
@@ -35,7 +35,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
-logger = logging.getLogger("quattrocento.simulator")
+logger = logging.getLogger("dextview.simulator")
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 31000

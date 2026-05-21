@@ -1,6 +1,6 @@
 import numpy as np
 
-from ..config import QuattrocentoConfig
+from ..config import DextViewConfig
 from ..models import DataBatch
 
 _MAX_BUFFER_BYTES = 50 * 1024 * 1024
@@ -14,7 +14,7 @@ class FrameParser:
     raw bytes on one side and DataBatch on the other.
     """
 
-    def __init__(self, config: QuattrocentoConfig) -> None:
+    def __init__(self, config: DextViewConfig) -> None:
         self._config = config
         self._frame_bytes = 2 * config.n_channels
         self._byte_buffer = bytearray()

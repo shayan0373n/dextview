@@ -3,20 +3,20 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 
-from quattrocento.config import QuattrocentoConfig
-from quattrocento.stream.rebroadcast import RebroadcastStream
+from dextview.config import DextViewConfig
+from dextview.stream.rebroadcast import RebroadcastStream
 
 
 class RebroadcastStreamConstructionTests(unittest.TestCase):
     def test_rejects_nonpositive_n_channels(self) -> None:
         with self.assertRaises(ValueError):
-            QuattrocentoConfig(sample_rate_hz=2048, n_channels=0)
+            DextViewConfig(sample_rate_hz=2048, n_channels=0)
 
 
 class RebroadcastStreamReadTests(unittest.TestCase):
     def setUp(self) -> None:
         self.n_channels = 64
-        self.config = QuattrocentoConfig(sample_rate_hz=2048, n_channels=self.n_channels)
+        self.config = DextViewConfig(sample_rate_hz=2048, n_channels=self.n_channels)
         self.stream = RebroadcastStream(
             config=self.config,
             host="127.0.0.1",

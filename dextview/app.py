@@ -2,15 +2,15 @@ import argparse
 import logging
 import sys
 
-logger = logging.getLogger("quattrocento.app")
+logger = logging.getLogger("dextview.app")
 
 from PyQt5 import QtCore, QtWidgets
 
 from .capture_log import CaptureLogger
 from .channels import load_channels
 from .hooks import HoldInTargetAnyFinger, PassedThresholdAnyFinger, LabJackPulse
-from .config import QuattrocentoConfig
-from .controller import QuattrocentoController
+from .config import DextViewConfig
+from .controller import DextViewController
 from .models import Stream, StreamMeta, ChannelKind, Channels
 from .processing import TriggerWindowProcessor
 from .protocol import (
@@ -22,7 +22,7 @@ from .protocol import (
 from .rebroadcast_detect import detect_stream_params
 from .settings import load_input_conf2_bytes
 from .stream import DirectStream, ProxyStream, RebroadcastStream
-from .ui import QuattrocentoMainWindow
+from .ui import DextViewMainWindow
 
 
 def _parse_auto_or_int(raw: str) -> str | int:
@@ -38,9 +38,9 @@ def _parse_auto_or_int(raw: str) -> str | int:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    """Parse CLI arguments for the Quattrocento application."""
+    """Parse CLI arguments for the DextView application."""
     parser = argparse.ArgumentParser(
-        description="Run the Quattrocento trigger-based force GUI."
+        description="Run the DextView trigger-based force GUI."
     )
     common = parser.add_argument_group("common settings")
     common.add_argument(
@@ -204,7 +204,7 @@ def _build_real_stream(
     trigger_channel = channels.by_kind(ChannelKind.TRIGGER).indices[0]
     channel_scales = {idx: ch.scale for idx, ch in channels.items()}
 
-    config = QuattrocentoConfig(
+    config = DextViewConfig(
         sample_rate_hz=args.sample_rate,
         n_channels=n_channels,
         window_seconds=args.window_seconds,
@@ -257,7 +257,7 @@ def _build_rebroadcast_stream(
     trigger_channel = channels.by_kind(ChannelKind.TRIGGER).indices[0]
     channel_scales = {idx: ch.scale for idx, ch in channels.items()}
 
-    config = QuattrocentoConfig(
+    config = DextViewConfig(
         sample_rate_hz=sampling_rate_hz,
         n_channels=n_channels,
         window_seconds=args.window_seconds,
@@ -340,7 +340,7 @@ def main(argv: list[str] | None = None) -> int:
 
     processor = TriggerWindowProcessor(stream.config)
 
-    window = QuattrocentoMainWindow(
+    window = DextViewMainWindow(
         channels=channels,
         sample_rate_hz=stream.config.sample_rate_hz,
         trigger_threshold=args.trigger_threshold,
@@ -349,7 +349,7 @@ def main(argv: list[str] | None = None) -> int:
     pulse = LabJackPulse()
     threshold_hook = PassedThresholdAnyFinger(finger_indices=finger_indices, pulse=pulse)
     hold_hook = HoldInTargetAnyFinger(finger_indices=finger_indices, pulse=pulse)
-    controller = QuattrocentoController(
+    controller = DextViewController(
         stream.config, stream, processor, window, meta,
         stream_hooks=[threshold_hook, hold_hook],
         event_hooks=event_hooks,

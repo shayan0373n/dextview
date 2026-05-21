@@ -871,7 +871,7 @@ class _OnsetLine(pg.InfiniteLine):
             super().mouseClickEvent(ev)
 
 
-class QuattrocentoMainWindow(QtWidgets.QMainWindow):
+class DextViewMainWindow(QtWidgets.QMainWindow):
     """Main visualization window for trigger-captured force events."""
 
     previous_requested = QtCore.pyqtSignal()
@@ -1138,7 +1138,7 @@ class QuattrocentoMainWindow(QtWidgets.QMainWindow):
 
     def _build_layout(self) -> None:
         """Constructs and wires all child widgets into the main window layout."""
-        self.setWindowTitle("Quattrocento Triggered Force Application")
+        self.setWindowTitle("DextView Triggered Force Application")
         self.resize(1140, 760)
         self.setFocusPolicy(Qt.StrongFocus)
 

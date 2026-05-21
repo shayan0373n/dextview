@@ -1,7 +1,7 @@
 import logging
 import socket
 
-from ..config import QuattrocentoConfig
+from ..config import DextViewConfig
 from ..models import DataBatch
 from ..protocol import (
     COMMAND_LENGTH,
@@ -32,7 +32,7 @@ class ProxyStream:
 
     def __init__(
         self,
-        config: QuattrocentoConfig,
+        config: DextViewConfig,
         *,
         client_sock: socket.socket,
         origin_sock: socket.socket,
@@ -98,7 +98,7 @@ class ProxyStream:
         client_sock.setblocking(False)
         origin_sock.setblocking(False)
 
-        config = QuattrocentoConfig(
+        config = DextViewConfig(
             sample_rate_hz=start_cmd.fsamp_hz,
             n_channels=n_channels,
             window_seconds=window_seconds,
@@ -109,7 +109,7 @@ class ProxyStream:
         return cls(config, client_sock=client_sock, origin_sock=origin_sock)
 
     @property
-    def config(self) -> QuattrocentoConfig:
+    def config(self) -> DextViewConfig:
         return self._config
 
     def read_batch(self) -> DataBatch:

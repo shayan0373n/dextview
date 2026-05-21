@@ -4,28 +4,32 @@ from pathlib import Path
 
 import numpy as np
 
-from quattrocento.channels import load_channels
-from quattrocento.config import QuattrocentoConfig
-from quattrocento.processing import detect_onset
+from dextview.channels import load_channels
+from dextview.config import DextViewConfig
+from dextview.processing import detect_onset
 
 
-class QuattrocentoConfigTests(unittest.TestCase):
+class DextViewConfigTests(unittest.TestCase):
     def test_default_config_initialises(self) -> None:
-        config = QuattrocentoConfig()
+        """Test that the default config initialises with default values."""
+        config = DextViewConfig()
         self.assertEqual(config.sample_rate_hz, 512)
         self.assertGreater(config.total_window_samples, 0)
 
     def test_positive_offset_rejected(self) -> None:
+        """Test that a positive window offset is rejected with ValueError."""
         with self.assertRaises(ValueError):
-            QuattrocentoConfig(window_offset_seconds=0.1)
+            DextViewConfig(window_offset_seconds=0.1)
 
     def test_offset_spanning_full_window_rejected(self) -> None:
+        """Test that an offset spanning the full window or more is rejected."""
         with self.assertRaises(ValueError):
-            QuattrocentoConfig(
+            DextViewConfig(
                 sample_rate_hz=8,
                 window_seconds=1.0,
                 window_offset_seconds=-1.0,
             )
+
 
 
 class LoadChannelsTests(unittest.TestCase):

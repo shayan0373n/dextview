@@ -7,7 +7,7 @@ from ..models import DataBatch, StreamMeta
 from .logic import _HoldInBandDetector, LabJackPulse, _RampOnsetDetector
 from .ui import _ForceMeterDialog, _HoldTargetDialog
 
-logger = logging.getLogger("quattrocento.hooks")
+logger = logging.getLogger("dextview.hooks")
 
 
 class PassedThresholdAnyFinger:
