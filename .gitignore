@@ -1,8 +1,7 @@
 .vscode
 __pycache__
-reports
 .pytest_cache
-todo.md
+.mypy_cache
 logs/
 .claude/
 .antigravitycli/

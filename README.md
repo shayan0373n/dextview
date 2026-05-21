@@ -26,20 +26,20 @@ Run the application with:
 
 ```
 python run_quattrocento.py --source real \
-    --channels quattrocento/channels_default.toml \
+    --channels configs/channels_default.toml \
     --trigger-channel 10 \
     --host <device-ip> --port <device-port> \
     --sample-rate 2048 --n-channels 16
 ```
 ```
 python run_quattrocento.py --source rebroadcast \
-    --channels quattrocento/channels_default.toml \
+    --channels configs/channels_default.toml \
     --trigger-channel 10 \
     --host <host> --port <port>
 ```
 ```
 python run_quattrocento.py --source proxy \
-    --channels quattrocento/channels_default.toml \
+    --channels configs/channels_default.toml \
     --trigger-channel 10 \
     --host <device-ip> --port <device-port>
 ```
@@ -47,11 +47,11 @@ python run_quattrocento.py --source proxy \
 ### Local Development with Simulator
 
 1. Start the simulator in one terminal:
-   `python -m quattrocento.simulator`
+   `python run_simulator.py`
 2. Start the main app in another:
    ```
    python run_quattrocento.py --source rebroadcast \
-       --channels quattrocento/channels_default.toml \
+       --channels configs/channels_default.toml \
        --trigger-channel 10 \
        --host 127.0.0.1 --port 31000
    ```
@@ -78,7 +78,7 @@ The `--channels` file is a TOML file mapping human-readable labels to channel in
 "trigger"  = { index = 10, scale = 5.0 }
 ```
 
-`scale` converts raw int16 values to physical units: `signal_physical = raw_int16 / 32768 * scale`. The trigger threshold (`--trigger-threshold`, default `0.5`) is in these same physical units. `quattrocento/channels_default.toml` is a ready-to-use example for the bundled simulator.
+`scale` converts raw int16 values to physical units: `signal_physical = raw_int16 / 32768 * scale`. The trigger threshold (`--trigger-threshold`, default `0.5`) is in these same physical units. `configs/channels_default.toml` is a ready-to-use example for the bundled simulator.
 
 ## Real Quattrocento Source
 

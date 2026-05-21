@@ -2,9 +2,9 @@
 # Simulator wire format: channels 0-9 are force signals, channel 10 is trigger.
 #
 # Usage:
-#   python -m quattrocento.simulator
-#   python -m quattrocento --source=rebroadcast --host=127.0.0.1 --port=31000 \
-#       --channels=quattrocento/channels_default.toml --log-dir=./capture_logs
+#   python run_simulator.py
+#   python run_quattrocento.py --source=rebroadcast --host=127.0.0.1 --port=31000 \
+#       --channels=configs/channels_default.toml --log-dir=./capture_logs
 
 [labels]
 "R Thumb"  = { index = 2, scale = 5 }
