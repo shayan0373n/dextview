@@ -6,12 +6,12 @@ Python/PyQt5 GUI for force and EMG capture from the **OT Bioelettronica Quattroc
 
 ## Features
 
-- **Connects to the Quattrocento** via three modes — direct, rebroadcast through OT BioLab+, or proxy. See [User Guide §2](USER_GUIDE.md#2-choosing-a-connection-mode).
+- **Connects to the Quattrocento** in three modes: direct, rebroadcast through OT BioLab+, or proxy. See [User Guide §2](USER_GUIDE.md#2-choosing-a-connection-mode).
 - **Real-time visualization** of force, EMG, and trigger channels, with toggleable bandpass (10–500 Hz) and powerline-notch (50/100/150 Hz) filters on EMG.
-- **Calibration system** — rest, MVC, and zero — with save/load to NumPy `.npz` files. Plots can be displayed in % MVC once calibrated.
+- **Calibration system** (rest, MVC, zero) with save/load to NumPy `.npz` files. Plots can be displayed in % MVC once calibrated.
 - **Trigger-based capture** of fixed-length windows around analog trigger events, with per-finger force profiles, peak-to-peak readouts, and auto onset detection.
-- **Closed-loop feedback hooks** that emit a 5 ms TTL pulse on a LabJack T4 (FIO4) based on force conditions (any-finger threshold or hold-in-target).
-- **JSON event logging** of every captured window — see [User Guide §7](USER_GUIDE.md#7-logging-captures).
+- **Closed-loop feedback hooks** that emit LabJack TTL pulses on configurable force conditions.
+- **JSON event logging** of every captured window. See [User Guide §7](USER_GUIDE.md#7-logging-captures).
 
 ---
 
