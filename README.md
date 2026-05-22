@@ -11,16 +11,16 @@ Python/PyQt5 GUI for force and EMG capture from the **OT Bioelettronica Quattroc
 - **Calibration system** — rest, MVC, and zero — with save/load to NumPy `.npz` files. Plots can be displayed in % MVC once calibrated.
 - **Trigger-based capture** of fixed-length windows around analog trigger events, with per-finger force profiles, peak-to-peak readouts, and auto onset detection.
 - **Closed-loop feedback hooks** that emit a 5 ms TTL pulse on a LabJack T4 (FIO4) based on force conditions (any-finger threshold or hold-in-target).
-- **JSON event logging** of every captured window — see [Event Log Format](#event-log-format) below.
-
-Channel mapping is configured via TOML. See [`configs/channels_default.toml`](configs/channels_default.toml) for the default 10-finger + EMG + trigger setup.
+- **JSON event logging** of every captured window — see [User Guide §7](USER_GUIDE.md#7-logging-captures).
 
 ---
 
 ## Installation
 
 ### Prerequisites
-Make sure you have [Conda](https://docs.conda.io/en/latest/) or a Python virtual environment ready. DextView requires Python 3.14 or later.
+
+- **Python 3.14** or later
+- **Optional**: Python environment manager (e.g., Conda)
 
 ### Quick Setup
 1.  **Clone the repository** and navigate to the project directory:
@@ -90,6 +90,15 @@ dextview --source rebroadcast \
 ```
 
 Run `dextview --help` for the full flag list.
+
+---
+
+## Testing
+
+Run from the repository root:
+```bash
+python -m pytest
+```
 
 ---
 
